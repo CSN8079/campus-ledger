@@ -27,7 +27,7 @@ npm run apk:verify    # 校验 APK 结构、资源、dex 与签名
 | 5 | `d8` | 把 class 文件转成 `classes.dex` |
 | 6 | 自制 ZIP 工具 | 把网页资源与 dex 写入 APK，保持资源表不压缩 |
 | 7 | `zipalign` | 让未压缩条目 4 字节对齐（Android 11+ 的硬性要求） |
-| 8 | `apksigner` | 用 `android-src/jizhangben.keystore` 签名 |
+| 8 | `apksigner` | 用本地自签名密钥签名（首次打包自动生成，不进仓库） |
 
 ### 三个已经踩过的坑
 
@@ -63,13 +63,21 @@ npm run test:android
 | 图标 | 改 `tools/make-android-icons.js` 后运行 `npm run apk:icons` |
 | 启动画面底色、权限 | `AndroidManifest.xml` |
 
-### 签名密钥
+### 签名密钥（重要）
 
-`android-src/jizhangben.keystore` 是首次打包时自动生成的自签名密钥
-（别名和密码都是 `jizhangben`）。
+首次执行 `npm run apk:build` 时，脚本会自动生成一个自签名密钥并保存在
+`android-src/jizhangben.keystore`（别名和密码都是 `jizhangben`）。
 
-**一定要保留这个文件**：安卓要求同一个应用的所有版本用同一个密钥签名，
-否则新版本无法覆盖安装。它只适合自己用，不适合上架应用商店。
+**这个文件不会进入 Git 仓库**（已被 `.gitignore` 排除），请自己妥善保管：
+
+- 安卓要求同一个应用的所有版本用同一个密钥签名，否则新版本**无法覆盖安装**，
+  只能先卸载再装（会丢失本地数据）
+- 换电脑时，把这个文件手动复制到新电脑的 `android-src/` 目录下
+- 只适合自己用，**不要**用它上架应用商店
+
+> 如果你是从 GitHub 克隆的仓库，本地并没有这个密钥文件，
+> 首次打包会自动生成一个新的。注意：用新密钥签出来的 APK
+> 无法覆盖安装别人签过的版本。
 
 ---
 

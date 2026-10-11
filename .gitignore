@@ -18,6 +18,12 @@ desktop.ini
 .vscode/
 .idea/
 
+# ---- 签名密钥（私人文件，绝不入库）----
+android-src/*.keystore
+android-src/*.jks
+*.keystore
+*.jks
+
 # ---- 自动备份与同步数据（含真实账单，绝不入库）----
 backups/
 .server.json
