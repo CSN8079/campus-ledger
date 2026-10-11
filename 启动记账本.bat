@@ -1,31 +1,37 @@
 @echo off
 chcp 65001 >nul
-title 大学生活记账本
+title jizhangben
+
+rem ------------------------------------------------------------------
+rem  This launcher is intentionally ASCII-only.
+rem  cmd.exe is not reliable at parsing non-ASCII batch files, so all the
+rem  Chinese guidance is printed by the Node server instead (see tools/serve.js).
+rem ------------------------------------------------------------------
+
 cd /d "%~dp0"
 
 where node >nul 2>nul
 if errorlevel 1 goto nonode
 
-echo 正在启动本地服务...
 node tools\serve.js --open
 
 echo.
-echo  服务已停止。
-echo  如果不是你主动按 Ctrl+C 停的，请把上面的报错内容截图反馈。
+echo [Server stopped]
+echo If you did not press Ctrl+C yourself, please send the error above.
 echo.
 pause
 exit /b 0
 
 :nonode
 echo.
-echo  未检测到 Node.js。
+echo [Node.js not found]
 echo.
-echo  请任选其一：
-echo   1) 安装 Node.js（https://nodejs.org）后重新双击本文件；
-echo   2) 直接双击 web\index.html 用浏览器打开（功能可用，
-echo      但「添加到主屏幕 / 离线缓存」需要本地服务）。
+echo Node.js is required to run the local server. Choose one:
+echo   1) Install Node.js from https://nodejs.org and run this file again.
+echo   2) Open web\index.html directly in a browser (works, but
+echo      "add to home screen / offline" needs the local server).
 echo.
-choice /c 12 /m "选择 1 打开下载页，2 直接打开网页版"
+choice /c 12 /m "1 = open download page, 2 = open the web app directly"
 if errorlevel 2 goto direct
 start "" "https://nodejs.org/zh-cn"
 exit /b 0
