@@ -513,6 +513,76 @@
   await wait(400);
   ok(Store.tx.length === txBefore + 1 && Store.categories.length === catBefore, '测试结束后已还原现场');
 
+  /* ---------- 28. 安全区不会被重复计算 ---------- */
+  const rootEl = document.documentElement;
+  rootEl.style.setProperty('--inset-t-px', '30px');
+  rootEl.style.setProperty('--inset-b-px', '24px');
+  UI.applySafeArea();
+  const csRoot = getComputedStyle(rootEl);
+  const safeT = parseFloat(csRoot.getPropertyValue('--safe-t-native')) || 0;
+  const safeB = parseFloat(csRoot.getPropertyValue('--safe-b-native')) || 0;
+  const fillsScreen = (window.screen.height - window.innerHeight) < 10;
+  if (fillsScreen) {
+    ok(safeT === 30 && safeB === 24, '内容铺满全屏时采用原生实测值（上 ' + safeT + ' / 下 ' + safeB + '）');
+  } else {
+    ok(safeT === 0 && safeB === 0, '内容未铺满全屏时不叠加原生边距，避免上下重复留白');
+  }
+
+  UI.go('stats');
+  await wait(400);
+  const topbarPad = parseFloat(getComputedStyle($('.topbar')).paddingTop) || 0;
+  const tabbarPad = parseFloat(getComputedStyle($('.tabbar')).paddingBottom) || 0;
+  ok(Math.abs(topbarPad - (safeT + 6)) < 1.5, '顶栏上边距 = 安全区 + 6px（实际 ' + topbarPad + 'px）');
+  ok(Math.abs(tabbarPad - Math.max(2, safeB - 16)) < 1.5, '切换栏下边距已下压 16px（实际 ' + tabbarPad + 'px）');
+  ok(topbarPad <= 60, '顶栏上边距不会过大：' + topbarPad + 'px');
+  ok(tabbarPad <= 40, '切换栏下边距不会过大：' + tabbarPad + 'px');
+
+  rootEl.style.setProperty('--inset-t-px', '0px');
+  rootEl.style.setProperty('--inset-b-px', '0px');
+  UI.applySafeArea();
+
+  /* ---------- 29. 设置页两个清理按钮的宽度 ---------- */
+  UI.go('settings');
+  await wait(450);
+  const setBtns = $$('#view-settings button');
+  const btnDup = setBtns.find((b) => b.textContent === '清理重复数据');
+  const btnNew = setBtns.find((b) => b.textContent === '分级清理数据');
+  ok(!!btnDup && !!btnNew, '找到两个清理按钮');
+  if (btnDup && btnNew) {
+    const w1 = Math.round(btnDup.getBoundingClientRect().width);
+    const w2 = Math.round(btnNew.getBoundingClientRect().width);
+    ok(w1 > 120 && w2 > 120, '两个按钮都足够宽（' + w1 + 'px / ' + w2 + 'px）');
+    ok(Math.abs(w1 - w2) <= 2, '两个按钮等宽，用满了整行空间');
+    ok(btnNew.textContent.indexOf('…') < 0, '按钮文字里没有省略号');
+    ok(btnNew.scrollWidth <= btnNew.clientWidth + 1,
+      '按钮文字没有被裁切（scrollWidth ' + btnNew.scrollWidth + ' <= clientWidth ' + btnNew.clientWidth + '）');
+  }
+
+  /* ---------- 30. 余额宝收益在界面上显示为正数 ---------- */
+  const gainCsvFixture = [
+    '交易时间,交易分类,交易对方,对方账号,商品说明,收/支,金额,收/付款方式,交易状态,交易订单号,商家订单号,备注',
+    '2026-08-01 00:00:00,投资理财,余额宝,,余额宝-收益发放,不计收支,0.02,余额宝,交易成功,GAIN0001,,/'
+  ].join('\n');
+  const gainRes = Importer.parse(gainCsvFixture, { includeIgnore: true, excludeRefund: true, autoClassify: true, dedupe: true });
+  eq(gainRes.items.length, 1, '解析出 1 条收益流水');
+  eq(gainRes.items[0].tx.type, 'income', '收益流水判定为收入方向');
+  eq(gainRes.items[0].tx.excludeStat, true, '收益流水依然不计入统计');
+  await Importer.commit(gainRes.items);
+  const gainTx = Store.tx.find((t) => t.externalId === 'GAIN0001');
+  ok(!!gainTx, '收益流水已入库');
+
+  UI.state.list.period = 'all';
+  UI.state.list.showHidden = true;
+  UI.go('list');
+  await wait(500);
+  const listTxt = $('#view-list').textContent;
+  ok(listTxt.indexOf('+0.02') >= 0, '明细页显示 +0.02（不再是 -0.02）');
+  ok(listTxt.indexOf('-0.02') < 0, '明细页不再出现 -0.02');
+
+  if (gainTx) await Store.removeManyTx([gainTx.id]);
+  UI.state.list.period = 'month';
+  await wait(200);
+
   UI.go('home');
   await wait(250);
 

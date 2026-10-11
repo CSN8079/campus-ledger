@@ -812,9 +812,9 @@
         U.el('div', { class: 'stat-card' }, [U.el('div', { class: 'k', text: '分类数' }), U.el('div', { class: 'v small', text: String(Store.categories.length) })]),
         U.el('div', { class: 'stat-card' }, [U.el('div', { class: 'k', text: '存储方式' }), U.el('div', { class: 'v small', text: global.DB.mode() === 'idb' ? 'IndexedDB' : 'localStorage' })])
       ]),
-      U.el('div', { style: { display: 'flex', gap: '8px', marginTop: '12px', flexWrap: 'wrap' } }, [
-        U.el('button', { class: 'btn btn-sm', text: '清理重复数据', onclick: () => UI.openCleanupSheet() }),
-        U.el('button', { class: 'btn btn-sm', text: '清理数据…', onclick: () => UI.openClearDataSheet() })
+      U.el('div', { style: { display: 'flex', gap: '8px', marginTop: '12px' } }, [
+        U.el('button', { class: 'btn btn-sm', style: { flex: '1 1 0%' }, text: '清理重复数据', onclick: () => UI.openCleanupSheet() }),
+        U.el('button', { class: 'btn btn-sm', style: { flex: '1 1 0%' }, text: '分级清理数据', onclick: () => UI.openClearDataSheet() })
       ])
     ]));
 
@@ -902,7 +902,8 @@
         '大学生活记账本 v1.0<br>' +
         '纯离线单文件应用，数据只保存在你自己的设备上，不联网、不上传。<br>' +
         '手机：浏览器打开后「添加到主屏幕」，即可像 App 一样使用；<br>' +
-        '电脑：双击项目里的「启动记账本.bat」即可打开。' })
+        '电脑：双击项目里的「启动记账本.bat」即可打开。' }),
+      U.el('div', { class: 'sheet-note', style: { marginTop: '8px', fontSize: '11px', opacity: '.75' }, text: UI.screenInfoText() })
     ]));
   };
 

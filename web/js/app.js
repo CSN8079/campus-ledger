@@ -36,6 +36,49 @@
     }
   };
 
+  /* ---------------- 安全区（安卓系统栏） ----------------
+     两套来源互为兜底：
+       1. 浏览器自己报的 env(safe-area-inset-*) —— 有的话最准
+       2. 安卓原生实测的高度（--inset-*-px）
+     但第 2 套只有在「内容确实铺到了屏幕边缘」时才能用：
+     如果 WebView 已经被系统挪进安全区（没有铺满全屏），
+     再叠加一次边距就会出现上下各多一块空白。
+     这里直接量一下视口和屏幕的差值来判断，差得多就说明没铺满。 */
+  UI.applySafeArea = function () {
+    const root = document.documentElement;
+    const cs = getComputedStyle(root);
+    const nativeTop = parseFloat(cs.getPropertyValue('--inset-t-px')) || 0;
+    const nativeBottom = parseFloat(cs.getPropertyValue('--inset-b-px')) || 0;
+
+    function envInset(side) {
+      const probe = document.createElement('div');
+      probe.style.cssText = 'position:fixed;left:-9999px;top:0;width:1px;height:env(safe-area-inset-' + side + ',0px);';
+      root.appendChild(probe);
+      const h = probe.getBoundingClientRect().height;
+      probe.remove();
+      return h;
+    }
+
+    const envTop = envInset('top');
+    const envBottom = envInset('bottom');
+
+    // 视口高度和屏幕高度差得不多，说明内容铺满了整屏
+    const coveredBySystemBars = Math.max(0, Math.round(window.screen.height - window.innerHeight));
+    const fillsScreen = coveredBySystemBars < 10;
+
+    root.style.setProperty('--safe-t-native', (envTop > 0 || !fillsScreen ? 0 : nativeTop) + 'px');
+    root.style.setProperty('--safe-b-native', (envBottom > 0 || !fillsScreen ? 0 : nativeBottom) + 'px');
+  };
+
+  UI.screenInfoText = function () {
+    const cs = getComputedStyle(document.documentElement);
+    const num = (k) => Math.round(parseFloat(cs.getPropertyValue(k)) || 0);
+    return '视口 ' + window.innerWidth + '×' + window.innerHeight +
+      '　屏幕 ' + window.screen.width + '×' + window.screen.height +
+      '　原生边距 上' + num('--inset-t-px') + ' 下' + num('--inset-b-px') +
+      '　实际生效 上' + num('--safe-t') + ' 下' + num('--safe-b');
+  };
+
   /* ---------------- 路由 ---------------- */
   UI.go = function (tab) {
     UI.state.tab = tab;
@@ -131,6 +174,9 @@
     const mode = await Store.init();
     console.log('[db] 存储模式：', mode);
     UI.applyTheme();
+    UI.applySafeArea();
+    global.addEventListener('resize', () => UI.applySafeArea());
+    if (global.visualViewport) global.visualViewport.addEventListener('resize', () => UI.applySafeArea());
     UI.state.list.hideExcluded = !!Store.settings.hideExcludedInList;
     wire();
 

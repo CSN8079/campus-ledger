@@ -333,9 +333,12 @@ public class MainActivity extends Activity {
         final int top = DisplayUtils.physicalToCss(topPx, density);
         final int bottom = DisplayUtils.physicalToCss(bottomPx, density);
 
+        // 只把实测值交给网页，是否采用由网页判断
+        // （内容没铺满全屏时再叠加边距会出现多余的空白）
         final String js = "(function(){var s=document.documentElement.style;"
-                + "s.setProperty('--safe-t-native','" + top + "px');"
-                + "s.setProperty('--safe-b-native','" + bottom + "px');})()";
+                + "s.setProperty('--inset-t-px','" + top + "px');"
+                + "s.setProperty('--inset-b-px','" + bottom + "px');"
+                + "if(window.UI&&window.UI.applySafeArea)window.UI.applySafeArea();})()";
         web.post(new Runnable() {
             @Override
             public void run() {

@@ -24,10 +24,15 @@
   --radius-lg: 22px;
   --shadow: 0 1px 2px rgba(16, 18, 32, .05), 0 6px 20px rgba(16, 18, 32, .06);
   --shadow-lg: 0 12px 40px rgba(16, 18, 32, .18);
-  --tabbar-h: 62px;
-  /* 安全区：优先取浏览器给的值；安卓 App 会把自己的实测值写进 --safe-*-native */
-  --safe-b-native: 0px;
+  --tabbar-h: 58px;
+  /* 安全区
+     --inset-*-px      安卓原生实测的系统栏高度（CSS 像素），由原生代码写入
+     --safe-*-native   网页判断后决定是否启用这个兜底值（见 UI.applySafeArea）
+     最终值取「浏览器报的安全区」与「原生兜底值」中较大的一个 */
+  --inset-t-px: 0px;
+  --inset-b-px: 0px;
   --safe-t-native: 0px;
+  --safe-b-native: 0px;
   --safe-b: max(env(safe-area-inset-bottom, 0px), var(--safe-b-native));
   --safe-t: max(env(safe-area-inset-top, 0px), var(--safe-t-native));
 }
@@ -79,7 +84,7 @@ a { color: var(--primary); }
 
 .topbar {
   position: sticky; top: 0; z-index: 30;
-  padding: calc(var(--safe-t) + 12px) 16px 12px;
+  padding: calc(var(--safe-t) + 6px) 16px 10px;
   display: flex; align-items: center; justify-content: space-between; gap: 12px;
   background: color-mix(in srgb, var(--bg) 86%, transparent);
   backdrop-filter: saturate(180%) blur(14px);
@@ -114,7 +119,9 @@ a { color: var(--primary); }
 .tabbar {
   position: fixed; left: 0; right: 0; bottom: 0; z-index: 40;
   height: calc(var(--tabbar-h) + var(--safe-b));
-  padding-bottom: var(--safe-b);
+  /* 图标整体下压 16px：把一部分安全区让给图标本身，
+     这样切换栏看起来更贴近屏幕底部，同时仍不会压到手势条 */
+  padding-bottom: max(2px, calc(var(--safe-b) - 16px));
   display: grid; grid-template-columns: repeat(4, 1fr);
   background: color-mix(in srgb, var(--bg-elev) 92%, transparent);
   backdrop-filter: saturate(180%) blur(16px);
