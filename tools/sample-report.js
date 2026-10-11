@@ -143,6 +143,7 @@ const EXPR = `(async () => {
 
     await send('Runtime.enable');
     await send('Page.enable');
+    await send('Emulation.setDeviceMetricsOverride', { width: 430, height: 932, deviceScaleFactor: 2, mobile: true });
     await send('Page.addScriptToEvaluateOnNewDocument', {
       source: "try{localStorage.setItem('jzb:sync',JSON.stringify({autoSync:false,url:'',token:'',deviceName:'示例',lastSyncAt:0,lastResult:null}));"
         + "localStorage.setItem('jzb:backupLastAt', String(Date.now()));}catch(e){}"
@@ -167,6 +168,20 @@ const EXPR = `(async () => {
       const f = path.join(ROOT, 'docs', 'screenshots', 'report-image.png');
       fs.writeFileSync(f, Buffer.from(v.png.b64, 'base64'));
       console.log('图片：' + path.relative(ROOT, f) + '（' + fs.statSync(f).size + ' 字节）');
+    }
+
+    /* 顺便截一张统计页「每日走势」的图，用于人工检查柱子基线与日期斜排 */
+    await send('Runtime.evaluate', { expression: 'UI.go("stats")' });
+    await sleep(900);
+    await send('Runtime.evaluate', {
+      expression: 'var t=document.querySelector(".trend"); if(t) t.scrollIntoView({block:"center"});'
+    });
+    await sleep(900);
+    const shot = await send('Page.captureScreenshot', { format: 'png' });
+    if (shot && shot.result && shot.result.data) {
+      const f = path.join(ROOT, 'docs', 'screenshots', 'trend-chart.png');
+      fs.writeFileSync(f, Buffer.from(shot.result.data, 'base64'));
+      console.log('走势图：' + path.relative(ROOT, f) + '（' + fs.statSync(f).size + ' 字节）');
     }
   } catch (e) {
     console.error('失败：' + e.message);

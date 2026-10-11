@@ -527,17 +527,31 @@
   }
 
   /* ---------------- 趋势图 ---------------- */
-  function trendChart(buckets) {
+  /* 走势图。monthly=true 时按月份展示（标签横排），否则按天（标签斜 45 度） */
+  function trendChart(buckets, monthly) {
+    const BAR_H = 110;
     const max = buckets.reduce((m, b) => Math.max(m, b.expense, b.income), 0) || 1;
-    const wrap = U.el('div', { class: 'trend' });
-    const step = buckets.length > 20 ? Math.ceil(buckets.length / 8) : 1;
+    const wrap = U.el('div', { class: 'trend' + (monthly ? '' : ' is-daily') });
+    // 标签太密就隔几个显示一个，保证斜排后不会挤在一起
+    const step = Math.max(1, Math.ceil(buckets.length / (monthly ? 12 : 10)));
+
     buckets.forEach((b, i) => {
-      const col = U.el('div', { class: 'trend-col', title: b.label + ' 支出 ¥' + b.expense.toFixed(2) + ' / 收入 ¥' + b.income.toFixed(2) });
-      const barWrap = U.el('div', { style: { display: 'flex', gap: '1px', alignItems: 'flex-end', width: '100%', height: '96px' } });
-      barWrap.appendChild(U.el('div', { class: 'trend-bar', style: { height: Math.max(2, (b.expense / max) * 96) + 'px', flex: '1' } }));
-      if (b.income > 0) barWrap.appendChild(U.el('div', { class: 'trend-bar income', style: { height: Math.max(2, (b.income / max) * 96) + 'px', flex: '1' } }));
-      col.appendChild(barWrap);
-      col.appendChild(U.el('div', { class: 'trend-x', text: (i % step === 0) ? b.label : '' }));
+      const col = U.el('div', {
+        class: 'trend-col',
+        title: b.label + '　支出 ¥' + b.expense.toFixed(2) + '　收入 ¥' + b.income.toFixed(2)
+      });
+
+      const bars = U.el('div', { class: 'trend-bars' });
+      bars.appendChild(U.el('div', { class: 'trend-bar', style: { height: Math.max(2, (b.expense / max) * BAR_H) + 'px' } }));
+      if (b.income > 0) {
+        bars.appendChild(U.el('div', { class: 'trend-bar income', style: { height: Math.max(2, (b.income / max) * BAR_H) + 'px' } }));
+      }
+      col.appendChild(bars);
+
+      const labels = U.el('div', { class: 'trend-labels' });
+      if (i % step === 0) labels.appendChild(U.el('div', { class: 'trend-x', text: b.label }));
+      col.appendChild(labels);
+
       wrap.appendChild(col);
     });
     return wrap;
@@ -651,7 +665,7 @@
         U.el('span', { class: 'hint', style: { display: 'flex', gap: '10px' } , html: '<span style="color:var(--expense)">■ 支出</span><span style="color:var(--income)">■ 收入</span>' })
       ])
     ]);
-    trendCard.appendChild(trendChart(trend.buckets));
+    trendCard.appendChild(trendChart(trend.buckets, trend.useMonth));
     view.appendChild(trendCard);
 
     /* 来源排行 */
@@ -1419,20 +1433,20 @@
     const opts = UI.state.importOpts = UI.state.importOpts || {
       autoClassify: Store.settings.autoClassifyOnImport,
       dedupe: Store.settings.dedupeOnImport,
-      includeIgnore: false,
+      includeIgnore: true,     // 默认连「不计收支」一起导入（导入后标记为不计入统计）
       excludeRefund: true
     };
 
     const drop = U.el('div', { class: 'drop' }, [
       U.el('span', { class: 'big', text: '📥' }),
       U.el('div', { text: '点击选择账单文件，或把文件拖到这里' }),
-      U.el('div', { style: { fontSize: '11.5px', marginTop: '6px' }, text: '支持：微信支付账单 .csv／支付宝账单 .csv（自动识别编码）' })
+      U.el('div', { style: { fontSize: '11.5px', marginTop: '6px' }, text: '支持：微信支付账单（.xlsx 或 .csv）、支付宝账单（.csv，自动识别编码）' })
     ]);
 
     function pickFile() {
       const fi = $('#fileInput');
       fi.value = '';
-      fi.accept = '.csv,.txt';
+      fi.accept = '.csv,.txt,.xlsx,.xlsm';
       fi.onchange = async () => {
         if (!fi.files || !fi.files[0]) return;
         await handleFile(fi.files[0]);
@@ -1449,18 +1463,46 @@
       if (f) await handleFile(f);
     });
 
+    /* 按当前选项，把上次选的文件重新解析一遍 */
+    async function resolveSource(o) {
+      const src = UI.state.importSource;
+      if (!src) throw new Error('请先选择账单文件');
+      let r;
+      if (src.kind === 'xlsx') r = await Importer.parseXlsx(src.buffer, o);
+      else r = Importer.parse(src.text, o);
+      r.fileName = src.name;
+      r.encoding = src.encoding;
+      return r;
+    }
+
+    /* 重新解析；可顺带改掉某个选项（例如把「不计收支」也导进来） */
+    async function reparse(patch) {
+      if (patch) Object.assign(opts, patch);
+      const r = await resolveSource(opts);
+      UI.state.importResult = r;
+      showPreview(r, reparse);
+    }
+
     async function handleFile(file) {
       try {
+        const name = String(file.name || '');
+        const lower = name.toLowerCase();
         UI.toast('正在解析账单…');
-        const decoded = await Importer.readFile(file);
-        UI.state.importText = decoded.text;
-        UI.state.importFileName = file.name;
-        UI.state.importEncoding = decoded.encoding;
-        const result = Importer.parse(decoded.text, opts);
-        result.fileName = file.name;
-        result.encoding = decoded.encoding;
+
+        if (lower.endsWith('.xlsx') || lower.endsWith('.xlsm')) {
+          // 微信账单默认导出的就是 Excel 文件
+          const buffer = await file.arrayBuffer();
+          UI.state.importSource = { kind: 'xlsx', buffer: buffer, name: name, encoding: 'Excel 工作簿' };
+        } else if (lower.endsWith('.xls')) {
+          throw new Error('不支持老式 .xls 格式，请在 Excel 里另存为 .xlsx 或 .csv 后再导入');
+        } else {
+          const decoded = await Importer.readFile(file);
+          UI.state.importSource = { kind: 'csv', text: decoded.text, name: name, encoding: decoded.encoding };
+        }
+
+        const result = await resolveSource(opts);
         UI.state.importResult = result;
-        showPreview(result);
+        showPreview(result, reparse);
       } catch (err) {
         console.error(err);
         UI.toast('解析失败：' + (err && err.message ? err.message : '未知错误'), 'err');
@@ -1476,16 +1518,13 @@
     ]);
 
     const body = U.el('div', null, [drop]);
-    if (UI.state.importText) {
+    if (UI.state.importSource) {
       body.appendChild(U.el('button', {
         class: 'btn btn-block', style: { marginTop: '10px' },
-        text: '用下面的选项重新解析：' + (UI.state.importFileName || '上次选择的文件'),
-        onclick: () => {
-          const r = Importer.parse(UI.state.importText, opts);
-          r.fileName = UI.state.importFileName;
-          r.encoding = UI.state.importEncoding;
-          UI.state.importResult = r;
-          showPreview(r);
+        text: '用下面的选项重新解析：' + (UI.state.importSource.name || '上次选择的文件'),
+        onclick: async () => {
+          try { await reparse(); }
+          catch (e) { UI.toast('解析失败：' + e.message, 'err'); }
         }
       }));
     }
@@ -1494,7 +1533,7 @@
       U.el('div', { class: 'card tight' }, [
         optRow('autoClassify', '自动分类', '根据交易对方与商品说明自动归类'),
         optRow('dedupe', '自动去重', '交易单号已存在时标记为重复，默认不导入'),
-        optRow('includeIgnore', '导入「不计收支」流水', '如零钱通、理财、提现等，导入后自动标记为不计入统计'),
+        optRow('includeIgnore', '导入「不计收支」流水', '余额宝转入转出、花呗还款、提现、转账等。导入后会标记为「不计入统计」，不影响任何合计'),
         optRow('excludeRefund', '退款流水不计入统计', '避免退款与原始支出重复计算')
       ]),
       U.el('div', { class: 'section-label', text: '怎么导出账单？' }),
@@ -1507,7 +1546,7 @@
   };
 
   /* ---------------- 导入预览 ---------------- */
-  function showPreview(result) {
+  function showPreview(result, onReparse) {
     const items = result.items;
     let shown = PAGE_SIZE;
 
@@ -1524,13 +1563,42 @@
       }, 0);
       U.clear(stat);
       const kindName = { wechat: '微信支付账单', alipay: '支付宝账单', generic: '通用账单' }[result.detect && result.detect.kind] || '账单';
+      /* 把「文件里有多少行、每行的归宿」算清楚，避免误以为数据丢了 */
+      const st = result.stats || {};
+      const excluded = items.filter((it) => it.tx.excludeStat).length;
+      const normal = Math.max(0, items.length - (st.dup || 0) - (st.suspect || 0) - excluded);
+      const reasons = st.skipReasons || {};
+      const reasonBits = [];
+      if (reasons.footer) reasonBits.push('账单结尾的汇总行 ' + reasons.footer);
+      if (reasons.closed) reasonBits.push('交易已关闭或失败 ' + reasons.closed);
+      if (reasons.noAmount) reasonBits.push('缺少金额 ' + reasons.noAmount);
+      if (reasons.noTime) reasonBits.push('缺少时间 ' + reasons.noTime);
+
+      const formatName = result.source === 'xlsx' ? 'Excel 工作簿' : (result.encoding || '-');
+
       U.append(stat, [
-        U.el('div', { html: '<b>' + U.esc(result.fileName || '') + '</b>　识别为「' + U.esc(kindName) + '」，编码 ' + U.esc(result.encoding || '-') }),
-        U.el('div', { html: '共解析 <b>' + items.length + '</b> 条　·　重复 <b>' + (result.stats.dup || 0) + '</b> 条　·　疑似重复 <b>' + (result.stats.suspect || 0) + '</b> 条　·　跳过 <b>' + result.stats.skipped + '</b> 条' + (result.stats.ignored ? '　·　忽略「不计收支」<b>' + result.stats.ignored + '</b> 条' : '') }),
+        U.el('div', { html: '<b>' + U.esc(result.fileName || '') + '</b>　识别为「' + U.esc(kindName) + '」，格式 ' + U.esc(formatName) +
+          (result.sheetName ? '　工作表「' + U.esc(result.sheetName) + '」' : '') }),
+        U.el('div', { html: '文件里共 <b>' + (st.dataRows || 0) + '</b> 行数据　→　生成 <b>' + items.length + '</b> 条记录' +
+          (st.skipped ? '，其中 <b>' + st.skipped + '</b> 行无法识别' : '') }),
+        U.el('div', { html: '新增 <b>' + normal + '</b>　·　重复 <b>' + (st.dup || 0) + '</b>　·　疑似重复 <b>' + (st.suspect || 0) +
+          '</b>　·　不计入统计 <b>' + excluded + '</b>' }),
         U.el('div', { html: '已勾选 <b>' + picked + '</b> 条，净额 <b>' + U.esc(U.fmtMoney(sum)) + '</b>' }),
-        (result.stats.suspect ? U.el('div', {
+        reasonBits.length ? U.el('div', { style: { fontSize: '11.5px', color: 'var(--text-faint)' }, text: '无法识别的行：' + reasonBits.join('、') }) : null,
+
+        (st.ignored ? U.el('div', { class: 'imp-warn' }, [
+          U.el('div', { html: '有 <b>' + st.ignored + '</b> 条「不计收支」流水被跳过了（余额宝转入转出、花呗还款、提现、转账等）。' }),
+          U.el('div', { style: { marginTop: '6px' }, text: '这些不是漏掉的数据，是当前选项设定为不导入。如果需要，点下面的按钮把它们也导进来，导入后会标记为「不计入统计」，不影响任何合计。' }),
+          U.el('button', {
+            class: 'btn btn-sm', style: { marginTop: '8px' },
+            text: '把「不计收支」也一起导入',
+            onclick: () => { if (onReparse) onReparse({ includeIgnore: true }); }
+          })
+        ]) : null),
+
+        (st.suspect ? U.el('div', {
           class: 'imp-warn',
-          html: '⚠️ 有 <b>' + result.stats.suspect + '</b> 条与已有记录「同一天、同金额」，已自动取消勾选以免重复记账。' +
+          html: '⚠️ 有 <b>' + st.suspect + '</b> 条与已有记录「同一天、同金额」，已自动取消勾选以免重复记账。' +
             '如果确实是两笔不同的消费，把鼠标移到「疑似重复」上可以看到原因，再手动勾选即可。'
         }) : null)
       ]);

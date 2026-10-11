@@ -4,6 +4,10 @@
    这是一个表达式，求值后返回 { results, errors, summary }。
    ============================================================ */
 (async () => {
+  const XLSX_FIXTURE_B64 = '__XLSX_FIXTURE__';
+  function near2(a, b, msg) { ok(Math.abs(a - b) < 0.005, msg + '（期望 ' + b + '，实际 ' + a + '）'); }
+  function eq(a, b, msg) { ok(a === b, msg + '（期望 ' + JSON.stringify(b) + '，实际 ' + JSON.stringify(a) + '）'); }
+
   const results = [];
   const errors = [];
   const ok = (cond, msg) => results.push({ ok: !!cond, msg: String(msg) });
@@ -367,6 +371,71 @@
 
   Sync.config.url = savedUrl;
   delete window.AndroidApp;
+
+  /* ---------- 23. 微信 xlsx 账单导入 ---------- */
+  const xlsxBytes = Uint8Array.from(atob(XLSX_FIXTURE_B64), (c) => c.charCodeAt(0));
+  const book = await Xlsx.read(xlsxBytes.buffer);
+  ok(book.sheets.length >= 1, 'xlsx 读取成功，共 ' + book.sheets.length + ' 个工作表');
+  ok(book.sheets[0].rows.length >= 6, '读到 ' + book.sheets[0].rows.length + ' 行数据');
+
+  const xp = await Importer.parseXlsx(xlsxBytes.buffer, { autoClassify: true, dedupe: true, includeIgnore: true, excludeRefund: true });
+  ok(xp.source === 'xlsx', '识别为 Excel 来源');
+  eq(xp.items.length, 4, '从 xlsx 里解析出 4 条流水');
+  const findParty = (n) => xp.items.find((it) => it.tx.counterparty === n);
+  ok(!!findParty('校园食堂'), '读到「校园食堂」');
+  near2(findParty('校园食堂').tx.amount, 15.01, '金额含小数也正确');
+  eq(findParty('校园食堂').tx.categoryName, '餐饮', 'xlsx 导入也会自动分类');
+  eq(findParty('爸爸').tx.type, 'income', '「爸爸 转账」识别为收入');
+  eq(findParty('爸爸').tx.categoryName, '生活费', '「爸爸」归类为生活费');
+  eq(findParty('零钱提现').tx.excludeStat, true, '「不计收支」被标记为不计入统计');
+  eq(xp.stats.dataRows, xp.items.length + xp.stats.ignored + xp.stats.skipped, 'xlsx 的每一行也都有归宿');
+
+  /* ---------- 24. 走势图：柱子基线统一 + 日期斜排 ---------- */
+  UI.go('stats');
+  await wait(450);
+  const trendEl = $('#view-stats .trend');
+  ok(!!trendEl, '统计页有走势图');
+  if (trendEl) {
+    ok(trendEl.classList.contains('is-daily'), '按天展示时启用斜排标签');
+    const cols = $$('#view-stats .trend-col');
+    const bars = $$('#view-stats .trend-bars');
+    const labs = $$('#view-stats .trend-labels');
+    ok(cols.length > 0, '走势图共 ' + cols.length + ' 列');
+    eq(bars.length, cols.length, '每一列都有独立的柱区');
+    eq(labs.length, cols.length, '每一列都有独立的标签区');
+
+    const bh = bars.map((b) => Math.round(b.getBoundingClientRect().height));
+    ok(bh.every((h) => h === bh[0]), '所有柱区高度一致（' + bh[0] + 'px），柱子起点因此统一');
+    const lbh = labs.map((b) => Math.round(b.getBoundingClientRect().height));
+    ok(lbh.every((h) => h === lbh[0]), '所有标签区高度一致（' + lbh[0] + 'px）');
+
+    const bottoms = bars.map((b) => b.getBoundingClientRect().bottom);
+    const spread = Math.max.apply(null, bottoms) - Math.min.apply(null, bottoms);
+    ok(spread <= 1, '所有柱子的基线对齐（最大偏差 ' + spread.toFixed(2) + 'px）');
+
+    const xEl = $('#view-stats .trend-x');
+    ok(!!xEl, '渲染出日期标签');
+    if (xEl) {
+      const cs = getComputedStyle(xEl);
+      ok(cs.transform.indexOf('matrix') === 0, '日期标签已旋转 45°：' + cs.transform);
+      ok(cs.fontVariantNumeric === 'tabular-nums', '数字使用等宽数字（font-variant-numeric=' + cs.fontVariantNumeric + '）');
+      ok(cs.fontFamily.toLowerCase().indexOf('mono') >= 0, '日期标签使用等宽字体，每个字符宽度一致');
+    }
+  }
+
+  /* ---------- 25. 滚到底部时悬浮按钮不遮挡内容 ---------- */
+  UI.go('stats');
+  await wait(350);
+  window.scrollTo(0, document.body.scrollHeight);
+  await wait(500);
+  const fabRect = $('#btnAdd').getBoundingClientRect();
+  const cards = $$('#view-stats .card');
+  const lastCard = cards[cards.length - 1];
+  const lastRect = lastCard.getBoundingClientRect();
+  ok(lastRect.bottom <= fabRect.top + 1,
+    '滚到底部时最后一张卡片在悬浮按钮上方（卡片底 ' + Math.round(lastRect.bottom) + 'px，按钮顶 ' + Math.round(fabRect.top) + 'px）');
+  window.scrollTo(0, 0);
+  await wait(200);
 
   UI.go('home');
   await wait(250);

@@ -29,6 +29,11 @@
     if (meta) meta.setAttribute('content', dark ? '#0e1016' : '#4f46e5');
     const btn = $('#btnTheme');
     if (btn) btn.textContent = dark ? '☀' : '◐';
+
+    // 安卓 App：告诉原生层当前是深色还是浅色，系统栏图标颜色才会跟着变
+    if (global.AndroidApp && typeof global.AndroidApp.setDark === 'function') {
+      try { global.AndroidApp.setDark(!!dark); } catch (e) { /* 忽略 */ }
+    }
   };
 
   /* ---------------- 路由 ---------------- */

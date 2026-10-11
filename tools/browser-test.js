@@ -125,7 +125,23 @@ async function main() {
     await client.send('Page.navigate', { url: BASE_URL });
     await sleep(2500);
 
-    const suiteExpr = fs.readFileSync(path.join(ROOT, 'tests', 'browser-suite.js'), 'utf8');
+    // 生成一个「微信账单」样式的 xlsx，注入到页面里供导入测试使用
+    const XlsxMod = require(path.join(ROOT, 'web', 'js', 'xlsx.js'));
+    const xlsxRows = [
+      ['微信支付账单明细'],
+      ['微信昵称：[测试用户]'],
+      ['起始时间：[2026-03-01 00:00:00] 终止时间：[2026-03-31 23:59:59]'],
+      [],
+      ['交易时间', '交易类型', '交易对方', '商品', '收/支', '金额(元)', '支付方式', '当前状态', '交易单号', '商户单号', '备注'],
+      ['2026-03-02 12:30:00', '商户消费', '校园食堂', '午餐', '支出', '¥15.01', '零钱', '支付成功', 'XL0001', 'M001', '/'],
+      ['2026-03-03 19:00:00', '转账', '爸爸', '生活费', '收入', '¥2001.00', '零钱', '已存入零钱', 'XL0002', '/', '/'],
+      ['2026-03-05 20:15:00', '商户消费', '美团', '外卖晚餐', '支出', '¥32.51', '零钱通', '支付成功', 'XL0003', 'M003', '/'],
+      ['2026-03-08 07:00:00', '零钱提现', '零钱提现', '提现到银行卡', '不计收支', '¥500.01', '零钱', '提现成功', 'XL0004', '/', '/']
+    ];
+    const xlsxB64 = Buffer.from(XlsxMod.build([{ name: '账单明细', rows: xlsxRows }])).toString('base64');
+
+    const suiteExpr = fs.readFileSync(path.join(ROOT, 'tests', 'browser-suite.js'), 'utf8')
+      .replace('__XLSX_FIXTURE__', xlsxB64);
 
     console.log('正在运行端到端测试…\n');
     const res = await client.send('Runtime.evaluate', {

@@ -4,12 +4,17 @@ import android.app.Activity;
 import android.content.ContentValues;
 import android.content.Intent;
 import android.content.res.Configuration;
+import android.graphics.Color;
 import android.net.Uri;
 import android.os.Build;
 import android.os.Bundle;
 import android.os.Environment;
 import android.provider.MediaStore;
 import android.util.Base64;
+import android.view.View;
+import android.view.Window;
+import android.view.WindowInsets;
+import android.view.WindowInsetsController;
 import android.webkit.JavascriptInterface;
 import android.webkit.ValueCallback;
 import android.webkit.WebChromeClient;
@@ -54,6 +59,12 @@ public class MainActivity extends Activity {
 
         web = new WebView(this);
         setContentView(web);
+
+        /* 让内容铺满整块屏幕，系统栏（状态栏 / 全面屏手势条）设为透明，
+           这样深色模式下底部就不会再出现一条突兀的白色手势条。
+           系统栏占用的高度会通过 --safe-t-native / --safe-b-native 传给网页，
+           由网页自己留出安全边距。 */
+        setupSystemBars();
 
         WebSettings s = web.getSettings();
         s.setJavaScriptEnabled(true);
@@ -112,6 +123,12 @@ public class MainActivity extends Activity {
                     }
                     return textResponse(404, "Not Found", "not found");
                 }
+            }
+
+            @Override
+            public void onPageFinished(WebView view, String url) {
+                // 页面重新加载后，之前写进去的变量会丢，这里再推一次
+                pushInsets(insetTop, insetBottom);
             }
 
             @Override
@@ -207,6 +224,18 @@ public class MainActivity extends Activity {
     /* ---------------- 导出文件保存到「下载」目录 ---------------- */
 
     public class Saver {
+
+        /** 网页切换深色/浅色时告诉原生，好调整系统栏图标的颜色 */
+        @JavascriptInterface
+        public void setDark(final boolean dark) {
+            runOnUiThread(new Runnable() {
+                @Override
+                public void run() {
+                    applyBarAppearance(dark);
+                }
+            });
+        }
+
         @JavascriptInterface
         public void save(String filename, String base64) {
             String safe = (filename == null || filename.length() == 0) ? "jizhangben.txt" : filename;
@@ -253,6 +282,88 @@ public class MainActivity extends Activity {
                 Toast.makeText(MainActivity.this, msg, Toast.LENGTH_LONG).show();
             }
         });
+    }
+
+    /* ---------------- 系统栏 ---------------- */
+
+    private int insetTop = 0;
+    private int insetBottom = 0;
+
+    private void setupSystemBars() {
+        Window window = getWindow();
+        if (window == null) return;
+
+        window.setStatusBarColor(Color.TRANSPARENT);
+        window.setNavigationBarColor(Color.TRANSPARENT);
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+            window.setStatusBarContrastEnforced(false);
+            window.setNavigationBarContrastEnforced(false);
+        }
+
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+            window.setDecorFitsSystemWindows(false);
+        } else {
+            window.getDecorView().setSystemUiVisibility(
+                    View.SYSTEM_UI_FLAG_LAYOUT_STABLE
+                            | View.SYSTEM_UI_FLAG_LAYOUT_HIDE_NAVIGATION
+                            | View.SYSTEM_UI_FLAG_LAYOUT_FULLSCREEN);
+        }
+
+        // 系统栏的实测高度交给网页，网页据此留出安全边距
+        window.getDecorView().setOnApplyWindowInsetsListener(new View.OnApplyWindowInsetsListener() {
+            @Override
+            public WindowInsets onApplyWindowInsets(View v, WindowInsets insets) {
+                pushInsets(insets.getSystemWindowInsetTop(), insets.getSystemWindowInsetBottom());
+                return insets.consumeSystemWindowInsets();
+            }
+        });
+
+        boolean night = (getResources().getConfiguration().uiMode
+                & Configuration.UI_MODE_NIGHT_MASK) == Configuration.UI_MODE_NIGHT_YES;
+        applyBarAppearance(night);
+    }
+
+    private void pushInsets(final int top, final int bottom) {
+        insetTop = top;
+        insetBottom = bottom;
+        final String js = "(function(){var s=document.documentElement.style;"
+                + "s.setProperty('--safe-t-native','" + top + "px');"
+                + "s.setProperty('--safe-b-native','" + bottom + "px');})()";
+        web.post(new Runnable() {
+            @Override
+            public void run() {
+                web.evaluateJavascript(js, null);
+            }
+        });
+    }
+
+    /** 系统栏透明后，图标颜色要跟着页面主题走，否则会看不清 */
+    private void applyBarAppearance(boolean dark) {
+        Window window = getWindow();
+        if (window == null) return;
+
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+            WindowInsetsController c = window.getInsetsController();
+            if (c != null) {
+                int mask = WindowInsetsController.APPEARANCE_LIGHT_STATUS_BARS
+                        | WindowInsetsController.APPEARANCE_LIGHT_NAVIGATION_BARS;
+                c.setSystemBarsAppearance(dark ? 0 : mask, mask);
+            }
+            return;
+        }
+
+        View decor = window.getDecorView();
+        int flags = decor.getSystemUiVisibility();
+        int light = View.SYSTEM_UI_FLAG_LIGHT_STATUS_BAR;
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            light |= View.SYSTEM_UI_FLAG_LIGHT_NAVIGATION_BAR;
+        }
+        if (dark) flags &= ~light;
+        else flags |= light;
+        decor.setSystemUiVisibility(flags
+                | View.SYSTEM_UI_FLAG_LAYOUT_STABLE
+                | View.SYSTEM_UI_FLAG_LAYOUT_HIDE_NAVIGATION
+                | View.SYSTEM_UI_FLAG_LAYOUT_FULLSCREEN);
     }
 
     /* 拒绝访问的响应 */
