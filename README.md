@@ -11,6 +11,14 @@
 
 ## 先看这里：安卓安装包（APK）
 
+**方式一：直接在手机上下载（推荐）**
+
+用手机浏览器打开 Releases 页面，点一下就能装：
+
+<https://github.com/CSN8079/campus-ledger/releases/latest>
+
+**方式二：用仓库里的安装包**
+
 **安装包位置：`dist/记账本-v1.1.0.apk`**
 
 1. 把 APK 传到手机上（微信文件传输助手、数据线、QQ 都行）
