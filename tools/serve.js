@@ -356,7 +356,19 @@ const LOGIN_PAGE = `<!DOCTYPE html>
 </body></html>`;
 
 /* ---------------- HTTP 服务 ---------------- */
-const server = http.createServer(async (req, res) => {
+
+/* 兜底：任何未捕获的异常都不应该让服务退出。
+   否则手机上同步失败一次，电脑上运行服务的窗口就会直接关掉。 */
+process.on('uncaughtException', function (e) {
+  console.error('\n  [未捕获的异常] ' + (e && e.stack ? e.stack : e));
+  console.error('  服务会继续运行；如果反复出现，请把这段报错发出来。\n');
+});
+process.on('unhandledRejection', function (e) {
+  console.error('\n  [未处理的异步异常] ' + (e && e.stack ? e.stack : e));
+  console.error('  服务会继续运行。\n');
+});
+
+async function handleRequest(req, res) {
   applyCors(req, res);
 
   if (req.method === 'OPTIONS') { res.writeHead(204); res.end(); return; }
@@ -385,6 +397,9 @@ const server = http.createServer(async (req, res) => {
 
   /* ---- 需要登录的接口 ---- */
   if (urlPath.indexOf('/api/') === 0) {
+    // 打一行日志：能直观看到手机的请求有没有到达电脑
+    console.log('  [接口] ' + req.method + ' ' + urlPath + '  来自 ' +
+      (req.socket.remoteAddress || '').replace('::ffff:', ''));
     if (!isAuthenticated(req)) {
       return sendJSON(res, 401, { ok: false, error: '未登录', needLogin: true });
     }
@@ -463,6 +478,21 @@ const server = http.createServer(async (req, res) => {
       });
       res.end(data);
     });
+  });
+}
+
+const server = http.createServer(function (req, res) {
+  // 手机中途断开、连接被重置等情况都会触发 error 事件；
+  // 没有监听者的话 Node 会直接抛出，把整个服务带崩。
+  req.on('error', function (e) { console.error('  [连接出错] ' + (e && e.message ? e.message : e)); });
+  res.on('error', function (e) { console.error('  [响应出错] ' + (e && e.message ? e.message : e)); });
+
+  handleRequest(req, res).catch(function (e) {
+    console.error('\n  [请求处理出错] ' + req.method + ' ' + req.url);
+    console.error('  ' + (e && e.stack ? e.stack : e));
+    try {
+      if (!res.headersSent) sendJSON(res, 500, { ok: false, error: '服务器内部错误：' + (e && e.message) });
+    } catch (e2) { /* 已经没法回应了，忽略 */ }
   });
 });
 

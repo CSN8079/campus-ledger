@@ -196,6 +196,48 @@ function tx(id, amount, updatedAt, extra) {
     ok(fs.existsSync(DATA), '服务器把数据写入了磁盘文件');
     const saved = JSON.parse(fs.readFileSync(DATA, 'utf8'));
     ok(Object.keys(saved.tx).length === 2, '磁盘上保存了 2 条账目（共 3 条，删除 1 条）');
+
+    section('8. 单个请求出错不会让服务退出');
+    res = await fetch(BASE + '/api/login', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: '{ 这不是合法的 JSON'
+    });
+    ok([400, 401, 429].indexOf(res.status) >= 0, '畸形请求得到正常回应（HTTP ' + res.status + '），没有把服务弄崩');
+
+    /* 请求中途断开：最容易把服务带崩的场景 */
+    for (let i = 0; i < 3; i++) {
+      try {
+        const ctrl = new AbortController();
+        const p = fetch(BASE + '/api/sync', {
+          method: 'POST',
+          headers: Object.assign({ 'Content-Type': 'application/json' }, token ? { Authorization: 'Bearer ' + token } : {}),
+          body: JSON.stringify({
+            deviceName: '断开测试',
+            tx: new Array(30).fill(0).map((_, k) => tx('cut-' + i + '-' + k, 1, 1000)),
+            categories: [], tombstones: []
+          }),
+          signal: ctrl.signal
+        });
+        setTimeout(() => ctrl.abort(), 1);
+        await p.catch(() => {});
+      } catch (e) { /* 预期内 */ }
+    }
+
+    /* 更狠一点：直接建 socket 发一半就断开 */
+    await new Promise((resolve) => {
+      const net = require('node:net');
+      const sock = net.connect(PORT, '127.0.0.1', () => {
+        sock.write('POST /api/sync HTTP/1.1\r\nHost: 127.0.0.1\r\nContent-Type: application/json\r\nContent-Length: 999999\r\n\r\n{"tx":[');
+        setTimeout(() => { sock.destroy(); resolve(); }, 30);
+      });
+      sock.on('error', () => resolve());
+    });
+
+    await sleep(600);
+    res = await api('/api/ping');
+    j = await res.json();
+    eq(res.status, 200, '几次中途断开之后，服务依然存活（这就是「按任意键继续」那个问题）');
+    eq(j.ok, true, '接口仍然正常返回');
   } catch (e) {
     fail++;
     console.log('\n测试过程中出错：' + e.message);

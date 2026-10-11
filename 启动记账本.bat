@@ -8,6 +8,11 @@ if errorlevel 1 goto nonode
 
 echo 正在启动本地服务...
 node tools\serve.js --open
+
+echo.
+echo  服务已停止。
+echo  如果不是你主动按 Ctrl+C 停的，请把上面的报错内容截图反馈。
+echo.
 pause
 exit /b 0
 
