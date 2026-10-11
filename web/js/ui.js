@@ -415,6 +415,53 @@
     body.appendChild(txGroups(list, { emptyText: '这个范围内没有符合条件的账单' }));
   };
 
+  /* ---------------- 带历史联想的输入框 ----------------
+     opts: { field: 'counterparty'|'item', value, placeholder, onChange, onPick } */
+  UI.autocompleteField = function (opts) {
+    opts = opts || {};
+    const field = opts.field || 'counterparty';
+    const wrap = U.el('div', { class: 'ac-wrap' });
+    const input = U.el('input', {
+      class: 'input', type: 'text', autocomplete: 'off',
+      placeholder: opts.placeholder || '', value: opts.value || '',
+      oninput: () => { if (opts.onChange) opts.onChange(input.value); renderList(); },
+      onfocus: () => renderList()
+    });
+    const listBox = U.el('div', { class: 'ac-list', style: { display: 'none' } });
+    wrap.appendChild(input);
+    wrap.appendChild(listBox);
+
+    function renderList() {
+      const q = input.value.trim();
+      const items = Store.suggest(field, q, 6).filter(function (r) { return !q || r.value !== q; });
+      U.clear(listBox);
+      if (!items.length) { listBox.style.display = 'none'; return; }
+      listBox.style.display = '';
+      items.forEach(function (r) {
+        const cat = Store.commonCategoryFor(field, r.value);
+        listBox.appendChild(U.el('div', {
+          class: 'ac-item',
+          onclick: () => {
+            input.value = r.value;
+            if (opts.onChange) opts.onChange(r.value);
+            listBox.style.display = 'none';
+            if (opts.onPick) opts.onPick(r.value, cat);
+          }
+        }, [
+          U.el('span', { class: 'ac-main', text: r.value }),
+          cat ? U.el('span', { class: 'ac-sub', text: '常记作 ' + cat.name }) : null,
+          U.el('span', { class: 'ac-count', text: r.count + ' 次' })
+        ]));
+      });
+    }
+
+    input.addEventListener('blur', function () {
+      setTimeout(function () { listBox.style.display = 'none'; }, 200);
+    });
+
+    return { el: wrap, input: input, getValue: function () { return input.value; } };
+  };
+
   /* ---------------- 分类 / 账户 筛选 ---------------- */
   UI.openCategoryFilter = function () {
     const f = UI.state.list;
@@ -712,6 +759,154 @@
     }
   };
 
+  /* ---------------- 内置 AI 助手 ---------------- */
+  UI.openAiSheet = function (opts) {
+    opts = opts || {};
+    const AI = global.AI;
+    if (!AI) { UI.toast('AI 模块没有加载', 'err'); return; }
+    AI.load();
+
+    let showConfig = !!opts.focusConfig || !AI.available();
+    let busy = false;
+    let resolved = [];
+
+    const body = U.el('div');
+    const configBox = U.el('div');
+    const logBox = U.el('div', { class: 'ai-log' });
+    const pendingBox = U.el('div');
+    const noteBox = U.el('div', { class: 'sheet-note', style: { margin: '10px 0 0' } });
+    const input = U.el('input', {
+      class: 'input', placeholder: '例如：把杭州深度求索的充值都改成「数码」',
+      onkeydown: (e) => { if (e.key === 'Enter') { e.preventDefault(); send(); } }
+    });
+    const sendBtn = U.el('button', { class: 'btn btn-primary', text: '问 AI', onclick: () => send() });
+    const epInput = U.el('input', { class: 'input', value: AI.config.endpoint || '', placeholder: 'https://api.deepseek.com' });
+    const keyInput = U.el('input', { class: 'input', type: 'password', value: AI.config.apiKey || '', placeholder: 'sk-...' });
+    const modelInput = U.el('input', { class: 'input', value: AI.config.model || 'deepseek-chat', placeholder: 'deepseek-chat' });
+
+    function say(msg, kind) {
+      noteBox.textContent = msg || '';
+      noteBox.style.color = kind === 'err' ? 'var(--expense)' : (kind === 'ok' ? 'var(--income)' : '');
+    }
+
+    function renderSend() { sendBtn.disabled = busy; sendBtn.textContent = busy ? '思考中…' : '问 AI'; }
+
+    function renderConfig() {
+      U.clear(configBox);
+      if (!showConfig) {
+        configBox.appendChild(U.el('div', { class: 'ai-cfg-line' }, [
+          U.el('span', { text: '接口：' + (AI.config.endpoint || '未填') + '　模型：' + (AI.config.model || '未填') }),
+          U.el('button', { class: 'btn btn-sm', text: '修改', onclick: () => { showConfig = true; renderConfig(); } })
+        ]));
+        return;
+      }
+      configBox.appendChild(U.el('div', { class: 'card tight', style: { marginBottom: '10px' } }, [
+        U.el('div', { class: 'field' }, [U.el('label', { text: '接口地址' }), epInput]),
+        U.el('div', { class: 'field' }, [U.el('label', { text: 'API 密钥' }), keyInput]),
+        U.el('div', { class: 'field' }, [U.el('label', { text: '模型名称' }), modelInput]),
+        U.el('button', {
+          class: 'btn btn-sm btn-primary btn-block', text: '保存',
+          onclick: () => {
+            AI.config.endpoint = String(epInput.value || '').trim();
+            AI.config.apiKey = String(keyInput.value || '').trim();
+            AI.config.model = String(modelInput.value || '').trim();
+            AI.save();
+            showConfig = !AI.available();
+            renderConfig();
+            say(AI.available() ? '已保存，可以开始提问了' : '接口地址、密钥、模型都要填', AI.available() ? 'ok' : 'err');
+          }
+        })
+      ]));
+    }
+
+    function bubble(role, text) {
+      logBox.appendChild(U.el('div', { class: 'ai-msg ' + role }, [U.el('div', { class: 'ai-text', text: text })]));
+    }
+
+    function renderPending() {
+      U.clear(pendingBox);
+      if (!resolved.length) return;
+      pendingBox.appendChild(U.el('div', { class: 'ai-pending-title', text: '待确认的改动（' + resolved.length + '）' }));
+      resolved.forEach((r) => {
+        const card = U.el('div', { class: 'ai-pending' + (r.ok ? '' : ' bad') });
+        card.appendChild(U.el('div', { class: 'ap-title', text: r.title }));
+        const why = r.reason || r.desc;
+        if (why) card.appendChild(U.el('div', { class: 'ap-desc', text: why }));
+        if (r.ok && r.count) card.appendChild(U.el('div', { class: 'ap-count', text: '会影响 ' + r.count + ' 条账目' }));
+        if (r.sample && r.sample.length) card.appendChild(U.el('div', { class: 'ap-sample', text: r.sample.join('　') }));
+        if (r.ok) {
+          card.appendChild(U.el('button', {
+            class: 'btn btn-sm btn-primary', text: r.done ? '已执行' : '执行这一项', disabled: !!r.done,
+            onclick: async (e) => {
+              e.target.disabled = true;
+              const out = await AI.execute([r]);
+              const one = out[0] || {};
+              UI.toast(one.msg || '已完成', one.ok ? 'ok' : 'err');
+              r.done = true;
+              renderPending();
+              UI.renderSettings();
+            }
+          }));
+        }
+        pendingBox.appendChild(card);
+      });
+      const todo = resolved.filter((r) => r.ok && !r.done);
+      if (todo.length > 1) {
+        pendingBox.appendChild(U.el('button', {
+          class: 'btn btn-primary btn-block', style: { marginTop: '10px' }, text: '全部执行（' + todo.length + ' 项）',
+          onclick: async (e) => {
+            e.target.disabled = true;
+            const out = await AI.execute(todo);
+            const okN = out.filter((o) => o.ok).length;
+            UI.toast('完成 ' + okN + ' / ' + out.length + ' 项', okN === out.length ? 'ok' : 'err');
+            todo.forEach((r) => { r.done = true; });
+            renderPending();
+            UI.renderSettings();
+          }
+        }));
+      }
+    }
+
+    async function send() {
+      const text = String(input.value || '').trim();
+      if (!text || busy) return;
+      if (!AI.available()) { showConfig = true; renderConfig(); say('请先填写 AI 接口、密钥和模型', 'err'); return; }
+      input.value = '';
+      bubble('me', text);
+      busy = true; renderSend();
+      const wait = U.el('div', { class: 'ai-msg ai' }, [U.el('div', { class: 'ai-text', text: '正在思考…' })]);
+      logBox.appendChild(wait);
+      try {
+        const parsed = await AI.ask(text);
+        wait.remove();
+        bubble('ai', parsed.reply || '（AI 没有给出说明）');
+        resolved = AI.resolve(parsed.actions || []);
+        say(resolved.length ? 'AI 想改动 ' + resolved.length + ' 项，确认之后才会生效' : '');
+      } catch (e) {
+        wait.remove();
+        bubble('err', (e && e.message) ? e.message : '出错了');
+      } finally {
+        busy = false; renderSend(); renderPending();
+      }
+    }
+
+    renderConfig();
+    renderSend();
+    say(AI.available() ? '' : '第一次使用：先把 AI 接口地址、密钥、模型填好并保存');
+
+    body.appendChild(configBox);
+    body.appendChild(logBox);
+    body.appendChild(pendingBox);
+    body.appendChild(U.el('div', { class: 'ai-input-row' }, [input, sendBtn]));
+    body.appendChild(noteBox);
+    body.appendChild(U.el('div', { style: { display: 'flex', gap: '8px', marginTop: '10px' } }, [
+      U.el('button', { class: 'btn btn-sm', text: '清空对话', onclick: () => { AI.reset(); U.clear(logBox); resolved = []; renderPending(); say('对话已清空'); } }),
+      U.el('button', { class: 'btn btn-sm', text: '关闭', onclick: () => UI.closeSheet() })
+    ]));
+
+    UI.openSheet({ title: '内置 AI 助手', body: body, note: 'AI 只给出建议，改动要你点确认才写入；密钥只保存在本机。' });
+  };
+
   /* ---------------- 设置页 ---------------- */
   UI.renderSettings = function () {
     const view = $('#view-settings');
@@ -796,10 +991,27 @@
         U.el('div', { class: 'sr-body' }, [U.el('div', { class: 'sr-title', text: '导入时自动去重' }), U.el('div', { class: 'sr-desc', text: '按交易单号识别已经导入过的账单' })]),
         U.el('button', { class: 'switch' + (Store.settings.dedupeOnImport ? ' is-on' : ''), onclick: async (e) => { await Store.updateSettings({ dedupeOnImport: !Store.settings.dedupeOnImport }); e.target.classList.toggle('is-on'); } })
       ]),
-      U.el('div', { class: 'switch-row' }, [
-        U.el('div', { class: 'sr-body' }, [U.el('div', { class: 'sr-title', text: '深色模式' }), U.el('div', { class: 'sr-desc', text: '也可以跟随系统自动切换' })]),
-        U.el('button', { class: 'switch' + (Store.settings.theme === 'dark' ? ' is-on' : ''), onclick: async (e) => { const next = Store.settings.theme === 'dark' ? 'light' : 'dark'; await Store.updateSettings({ theme: next }); e.target.classList.toggle('is-on'); UI.applyTheme(); } })
-      ])
+      (function () {
+        const seg = U.el('div', { class: 'seg', style: { marginBottom: '0' } });
+        [{ v: 'auto', n: '跟随系统' }, { v: 'light', n: '浅色' }, { v: 'dark', n: '深色' }].forEach(function (o) {
+          seg.appendChild(U.el('button', {
+            class: (Store.settings.theme || 'auto') === o.v ? 'is-active' : '',
+            text: o.n,
+            onclick: async function () {
+              await Store.updateSettings({ theme: o.v });
+              UI.applyTheme();
+              Array.prototype.forEach.call(seg.children, function (b) {
+                b.classList.toggle('is-active', b.textContent === o.n);
+              });
+            }
+          }));
+        });
+        return U.el('div', { class: 'field' }, [
+          U.el('label', { text: '外观主题' }),
+          seg,
+          U.el('div', { class: 'sheet-note', style: { margin: '6px 0 0' }, text: '选「跟随系统」时，手机切到深色模式应用也会跟着变' })
+        ]);
+      })()
     ]));
 
     /* 数据 */
@@ -859,7 +1071,7 @@
     if (Sync) {
       const syncCard = U.el('div', { class: 'card' });
       syncCard.appendChild(U.el('div', { class: 'card-title' }, [
-        U.el('h3', { text: '与电脑同步' }),
+        U.el('h3', { text: Sync.isApp() ? '与电脑同步' : '与手机同步' }),
         U.el('span', { class: 'hint', text: Sync.statusText() })
       ]));
 
@@ -909,11 +1121,29 @@
       view.appendChild(syncCard);
     }
 
+    /* 内置 AI 助手 */
+    if (global.AI) {
+      const AI = global.AI;
+      view.appendChild(U.el('div', { class: 'card' }, [
+        U.el('div', { class: 'card-title' }, [
+          U.el('h3', { text: '内置 AI 助手' }),
+          U.el('span', { class: 'hint', text: AI.available() ? '已配置' : '未配置' })
+        ]),
+        U.el('p', { style: { fontSize: '12.5px', color: 'var(--text-soft)', lineHeight: '1.8', margin: '0 0 10px' },
+          text: '填一个 AI 接口（例如 DeepSeek），就能用说话的方式批量整理账目：「把杭州深度求索的充值从其他改成数码」。AI 只给建议，改不改由你点确认。' }),
+        U.el('div', { style: { display: 'flex', gap: '8px', flexWrap: 'wrap' } }, [
+          U.el('button', { class: 'btn btn-sm btn-primary', text: '打开 AI 助手', onclick: () => UI.openAiSheet() }),
+          U.el('button', { class: 'btn btn-sm', text: 'AI 接口设置', onclick: () => UI.openAiSheet({ focusConfig: true }) })
+        ]),
+        U.el('div', { class: 'sheet-note', text: '接口地址和密钥只保存在这台设备上；发给 AI 的只有分类与来源的统计概况，不会上传每笔账目。' })
+      ]));
+    }
+
     /* 关于 */
     view.appendChild(U.el('div', { class: 'card' }, [
       U.el('div', { class: 'card-title' }, [U.el('h3', { text: '关于' })]),
       U.el('div', { class: 'sheet-note', style: { marginTop: '0' }, html:
-        '大学生活记账本 v1.0<br>' +
+        '大学生活记账本 v' + (D.APP_VERSION || '2.0.0') + '<br>' +
         '纯离线单文件应用，数据只保存在你自己的设备上，不联网、不上传。<br>' +
         '手机：浏览器打开后「添加到主屏幕」，即可像 App 一样使用；<br>' +
         '电脑：双击项目里的「启动记账本.bat」即可打开。' }),
@@ -983,6 +1213,28 @@
 
     const catGrid = U.el('div', { class: 'cat-grid', id: 'txCatGrid' });
 
+    /* 用户如果手动点过分类，就不再自动改；否则套用历史来源的常用分类 */
+    let categoryTouched = false;
+
+    const srcField = UI.autocompleteField({
+      field: 'counterparty', value: model.counterparty,
+      placeholder: '例如：食堂、美团、爸爸',
+      onChange: (v) => { model.counterparty = v; },
+      onPick: (v, cat) => {
+        model.counterparty = v;
+        if (cat && !categoryTouched) {
+          const c = Store.categories.find((x) => x.name === cat.name);
+          if (c) { model.categoryId = c.id; renderCatGrid(); }
+        }
+      }
+    });
+
+    const itemField = UI.autocompleteField({
+      field: 'item', value: model.item,
+      placeholder: '例如：午餐、教材费、地铁',
+      onChange: (v) => { model.item = v; }
+    });
+
     function renderCatGrid() {
       U.clear(catGrid);
       const cats = Store.categoriesFor(model.type, false);
@@ -993,7 +1245,7 @@
       cats.forEach((c) => {
         catGrid.appendChild(U.el('button', {
           class: 'cat-pick' + (c.id === model.categoryId ? ' is-active' : ''),
-          onclick: () => { model.categoryId = c.id; renderCatGrid(); }
+          onclick: () => { categoryTouched = true; model.categoryId = c.id; renderCatGrid(); }
         }, [
           U.el('span', { class: 'ci', text: c.icon }),
           U.el('span', { class: 'cn', text: c.name })
@@ -1045,11 +1297,12 @@
 
       U.el('div', { class: 'field' }, [
         U.el('label', { text: '来源（交易对方 / 商家）' }),
-        U.el('input', { class: 'input', placeholder: '例如：食堂、美团、爸爸', value: model.counterparty, oninput: (e) => { model.counterparty = e.target.value; } })
+        srcField.el,
+        U.el('div', { class: 'sheet-note', style: { margin: '4px 0 0' }, text: '输入几个字就会列出以前填过的来源，点一下即可套用' })
       ]),
       U.el('div', { class: 'field' }, [
         U.el('label', { text: '用途（买了什么 / 做什么）' }),
-        U.el('input', { class: 'input', placeholder: '例如：午餐、教材费、地铁', value: model.item, oninput: (e) => { model.item = e.target.value; } })
+        itemField.el
       ]),
       U.el('div', { class: 'field' }, [
         U.el('label', { text: '备注' }),

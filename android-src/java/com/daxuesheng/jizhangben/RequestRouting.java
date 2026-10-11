@@ -24,17 +24,28 @@ final class RequestRouting {
     /** 用户在「与电脑同步」里填的电脑地址，精确放行 */
     private static volatile String allowedHost = "";
 
+    /** 用户填的 AI 接口地址（只取主机名），同样精确放行 */
+    private static volatile String allowedAiHost = "";
+
     static void setAllowedHost(String h) {
         allowedHost = (h == null) ? "" : h.trim();
+    }
+
+    static void setAiHost(String h) {
+        allowedAiHost = (h == null) ? "" : h.trim();
     }
 
     static String getAllowedHost() {
         return allowedHost;
     }
 
+    static String getAllowedAiHost() {
+        return allowedAiHost;
+    }
+
     /** 决定一个请求该怎么处理。host 为请求的主机名。 */
     static int routeFor(String host) {
-        return routeFor(host, allowedHost);
+        return routeFor(host, allowedHost, allowedAiHost);
     }
 
     /**
@@ -45,9 +56,18 @@ final class RequestRouting {
      * 只按网段判断会把用户自己的电脑也拦掉，表现为「同步失败」。
      */
     static int routeFor(String host, String allowed) {
+        return routeFor(host, allowed, "");
+    }
+
+    /**
+     * 完整版：两个白名单——用户填的电脑地址（同步用）和用户填的 AI 接口地址。
+     * 两者都是用户自己主动填的，填了才放行；公网地址默认一律拒绝。
+     */
+    static int routeFor(String host, String allowed, String allowedAi) {
         if (host == null || host.length() == 0) return ROUTE_BLOCK;
         if (HOST.equals(host)) return ROUTE_ASSETS;
         if (allowed != null && allowed.length() > 0 && allowed.equals(host)) return ROUTE_PASSTHROUGH;
+        if (allowedAi != null && allowedAi.length() > 0 && allowedAi.equals(host)) return ROUTE_PASSTHROUGH;
         if (isPrivateHost(host)) return ROUTE_PASSTHROUGH;
         return ROUTE_BLOCK;
     }

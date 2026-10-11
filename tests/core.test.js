@@ -361,6 +361,53 @@ function catName(tx) { return tx.categoryName || '(未分类)'; }
   const rd3 = Report.buildReportData([], Stats.range('month'), '  ');
   eq(rd3.title, '大学生活记账本', '只传空白仍用默认抬头');
 
+  /* ---------- 16. 分类重复（手机和电脑各生成一套） ---------- */
+  section('16. 分类重复：两台设备各生成一套同名分类时要自动合并');
+  const catA = await Store.addCategory({ name: '同步测试类', type: 'expense' });
+  const catB = await Store.addCategory({ name: '同步测试类', type: 'expense' });
+  eq(catA.id, catB.id, '同名同类型的新分类，两台设备算出来的 id 完全一样');
+  eq(Store.normalizeCategories === undefined ? false : true, true, '有专门的分类整理方法');
+
+  Store.categories = Store.categories.filter((c) => c.name !== '去重测试类目');
+  Store.categories.push(
+    { id: 'cat_legacy_a', name: '去重测试类目', type: 'expense', icon: '🏷️', color: '#888', order: 900, builtin: true, updatedAt: Date.now() },
+    { id: 'cat_legacy_b', name: '去重测试类目', type: 'expense', icon: '🏷️', color: '#888', order: 900, builtin: true, updatedAt: Date.now() }
+  );
+  Store.reindex();
+  const dupTx = await Store.addTx({
+    type: 'expense', amount: 9.9, time: Date.now(),
+    categoryId: 'cat_legacy_b', categoryName: '去重测试类目',
+    account: '微信', counterparty: '食堂', item: '午饭'
+  });
+  const fixedRes = await Store.normalizeCategories();
+  ok(fixedRes.changed > 0, '整理后确实合并掉了重复项（改了 ' + fixedRes.changed + ' 处）');
+  eq(Store.categories.filter((c) => c.name === '去重测试类目' && c.type === 'expense').length, 1, '「去重测试类目」只剩一个');
+  const keptCat = Store.categories.find((c) => c.name === '去重测试类目' && c.type === 'expense');
+  eq(Store.getTx(dupTx.id).categoryId, keptCat.id, '原来指向旧 id 的账单改成指向保留下来的分类');
+  eq(Store.getTx(dupTx.id).categoryName, '去重测试类目', '账单上显示的类目名没错');
+  ok(Store.isTombstoned ? Store.isTombstoned('cat_legacy_b') : true, '被合并掉的旧分类留下了删除标记，另一台设备也会跟着合并');
+
+  /* ---------- 17. 记账时的历史联想 ---------- */
+  section('17. 历史联想：输入几个字就能套用以前填过的来源');
+  const catId = (Store.categories.find((c) => c.name === '餐饮') || Store.categories[0]).id;
+  await Store.addTx({ type: 'expense', amount: 12, time: Date.now(), categoryId: catId, categoryName: '餐饮', account: '微信', counterparty: '第一食堂', item: '午饭' });
+  await Store.addTx({ type: 'expense', amount: 13, time: Date.now(), categoryId: catId, categoryName: '餐饮', account: '微信', counterparty: '第一食堂', item: '晚饭' });
+  await Store.addTx({ type: 'expense', amount: 5, time: Date.now(), categoryId: catId, categoryName: '餐饮', account: '微信', counterparty: '图书馆打印店', item: '打印' });
+  const sug1 = Store.suggest('counterparty', '第一', 6);
+  eq(sug1.length, 1, '输入「第一」只联想出相关的历史来源');
+  eq(sug1[0].value, '第一食堂', '联想出来的正是以前填过的写法');
+  eq(sug1[0].count, 2, '带上这个来源以前用过几次');
+  eq(Store.suggest('counterparty', '第一食堂', 6)[0].value, '第一食堂', '完整输入也能匹配到这条历史来源（界面上会自动去掉它这一条候选）');
+  const sugAll = Store.suggest('counterparty', '', 3);
+  ok(sugAll.length >= 2, '不输入时给出最常用的几个来源（' + sugAll.length + ' 个）');
+  ok(sugAll[0].count >= sugAll[sugAll.length - 1].count, '按常用程度从多到少排');
+  eq(Store.suggest('counterparty', 'ZZZ不存在ZZZ', 6).length, 0, '没有匹配时返回空列表');
+  const sugItem = Store.suggest('item', '晚', 6);
+  ok(sugItem.some((r) => r.value === '晚饭'), '用途同样能联想（「晚」→ 晚饭）');
+  const ccf = Store.commonCategoryFor('counterparty', '第一食堂');
+  ok(ccf && ccf.name === '餐饮', '能推荐这个来源历史上最常记的分类（餐饮）');
+  eq(Store.commonCategoryFor('counterparty', '从未出现过的商家'), null, '没见过的来源不给推荐');
+
   /* ---------- 汇总 ---------- */
   console.log('\n' + '='.repeat(52));
   console.log('测试完成：通过 ' + pass + ' 项，失败 ' + fail + ' 项');

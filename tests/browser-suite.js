@@ -255,7 +255,9 @@
   /* ---------- 17. 与电脑同步 ---------- */
   UI.go('settings');
   await wait(320);
-  ok($('#view-settings').textContent.indexOf('与电脑同步') >= 0, '设置页有「与电脑同步」入口');
+  const syncTitle = Sync.isApp() ? '与电脑同步' : '与手机同步';
+  ok($('#view-settings').textContent.indexOf(syncTitle) >= 0, '设置页有「' + syncTitle + '」入口（电脑上说的是与手机同步）');
+  ok($('#view-settings').textContent.indexOf('与手机同步') >= 0 || Sync.isApp(), '电脑端不再写「与电脑同步」');
   UI.openSyncSheet();
   await wait(450);
   ok($('#sheetRoot').textContent.indexOf('自动同步') >= 0, '同步面板里有自动同步开关');
@@ -798,6 +800,112 @@
   UI.closeSheet();
   await wait(420);
   await Backup.clearAll();
+
+  /* ---------- 38. 外观主题：跟随系统 / 浅色 / 深色 ---------- */
+  UI.go('settings');
+  await wait(400);
+  const pickTheme = (name) => {
+    const b = $$('#view-settings .seg button').find((x) => x.textContent === name);
+    if (b) b.click();
+    return !!b;
+  };
+  const themeNames = ['跟随系统', '浅色', '深色'];
+  const themeBtns = $$('#view-settings .seg button').filter((b) => themeNames.indexOf(b.textContent) >= 0);
+  eq(themeBtns.length, 3, '设置页有「跟随系统 / 浅色 / 深色」三个选项，不再只是一个开关');
+  ok(pickTheme('深色'), '点得到「深色」');
+  await wait(350);
+  eq(Store.settings.theme, 'dark', '选「深色」后设置里存的是 dark');
+  eq(document.documentElement.getAttribute('data-theme'), 'dark', '页面确实变成深色');
+  ok(pickTheme('浅色'), '点得到「浅色」');
+  await wait(350);
+  eq(document.documentElement.getAttribute('data-theme'), 'light', '选「浅色」后页面变浅色');
+  ok(pickTheme('跟随系统'), '点得到「跟随系统」');
+  await wait(350);
+  eq(Store.settings.theme, 'auto', '选「跟随系统」后设置里存的是 auto');
+  const sysDark = !!(window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches);
+  eq(document.documentElement.getAttribute('data-theme'), sysDark ? 'dark' : 'light', '跟随系统时页面深浅与系统一致');
+  ok($('#view-settings').textContent.indexOf('跟随系统') >= 0, '界面上能看到「跟随系统」的说法');
+
+  /* ---------- 39. 记账时能联想以前填过的来源 ---------- */
+  UI.go('list');
+  await wait(300);
+  $('#btnAdd').click();
+  await wait(450);
+  const srcField = $$('#sheetRoot .field').find((f) => f.textContent.indexOf('来源') >= 0);
+  ok(!!srcField, '「记一笔」的表单里有「来源」一栏');
+  const acInput = srcField.querySelector('.ac-wrap input.input') || srcField.querySelector('input.input');
+  ok(!!acInput, '来源是一个会联想的输入框');
+  acInput.value = '校园';
+  acInput.dispatchEvent(new Event('input', { bubbles: true }));
+  await wait(300);
+  const acItems = $$('#sheetRoot .ac-list .ac-item');
+  ok(acItems.length >= 1, '输入两个字就列出以前填过的来源（' + acItems.length + ' 条）');
+  ok(acItems[0].textContent.indexOf('校园食堂') >= 0, '列出来的正是以前填过的「校园食堂」');
+  ok(acItems[0].textContent.indexOf('次') >= 0, '顺带标出以前用过几次');
+  const beforePick = acInput.value;
+  if (acItems.length) acItems[0].click();
+  await wait(220);
+  eq(beforePick, '校园', '输入过程中输入框不会被自动改掉');
+  eq(acInput.value, '校园食堂', '点一下候选，就把历史记录填进输入框（自动填充）');
+  ok($$('#sheetRoot .ac-list .ac-item').length === 0 || $('#sheetRoot .ac-list').style.display === 'none', '选完以后候选列表自动收起');
+  UI.closeSheet();
+  await wait(450);
+
+  /* ---------- 40. 内置 AI 助手（建议 → 确认 → 执行） ---------- */
+  UI.go('settings');
+  await wait(400);
+  ok($('#view-settings').textContent.indexOf('内置 AI 助手') >= 0, '设置页有「内置 AI 助手」入口');
+  const oldAIConfig = JSON.parse(JSON.stringify(AI.config));
+  AI.config.endpoint = 'https://api.deepseek.com';
+  AI.config.apiKey = 'sk-test-only';
+  AI.config.model = 'deepseek-chat';
+  AI.save();
+  const realAsk = AI.ask;
+  const askedTexts = [];
+  let aiExecuted = 0;
+  AI.ask = async function (text) {
+    askedTexts.push(text);
+    return AI.parseIntent(JSON.stringify({
+      reply: '好的，我把校园食堂的账目都归到餐饮',
+      actions: [{ type: 'setCategory', category: '餐饮', filter: { counterparty: '校园食堂' } }]
+    }));
+  };
+  UI.openAiSheet();
+  await wait(500);
+  ok($('#sheetRoot').textContent.indexOf('AI') >= 0, 'AI 助手面板可以打开');
+  const aiInput = $('#sheetRoot .ai-input-row input');
+  ok(!!aiInput, '面板里有可以直接说话的输入框');
+  aiInput.value = '把校园食堂的账目都改成餐饮';
+  aiInput.dispatchEvent(new Event('input', { bubbles: true }));
+  const sendBtn = $$('#sheetRoot .ai-input-row button')[0];
+  ok(!!sendBtn, '有「问 AI」按钮');
+  sendBtn.click();
+  const tAI = Date.now();
+  while (!$$('#sheetRoot .ai-pending').length && Date.now() - tAI < 4000) await wait(80);
+  eq(askedTexts.length, 1, '说的话确实交给了 AI');
+  ok($('#sheetRoot').textContent.indexOf('待确认的改动') >= 0, 'AI 的建议先列成「待确认的改动」，不会直接改数据');
+  const pend = $$('#sheetRoot .ai-pending')[0];
+  ok(!!pend, '有一条待确认的建议卡片');
+  ok(pend.textContent.indexOf('会影响') >= 0, '卡片上写清楚会影响几条账目');
+  ok(pend.textContent.indexOf('餐饮') >= 0, '卡片上写清楚要改成哪个分类');
+  const partyTx = Store.tx.filter((t) => t.counterparty === '校园食堂');
+  ok(partyTx.length >= 1, '执行前有 ' + partyTx.length + ' 条「校园食堂」的账目');
+  const beforeCat = partyTx[0].categoryName;
+  ok(beforeCat !== '数码', '执行前分类不是「数码」（当前是 ' + beforeCat + '）');
+  const execBtn = pend.querySelector('button');
+  ok(!!execBtn, '建议卡片上有「执行这一项」按钮');
+  if (execBtn) { execBtn.click(); aiExecuted++; }
+  await wait(800);
+  const afterTx = Store.tx.filter((t) => t.counterparty === '校园食堂');
+  ok(afterTx.every((t) => t.categoryName === '餐饮'), '执行后这些账目的分类确实变成了「餐饮」');
+  eq(aiExecuted, 1, '是用户点了确认才执行的');
+  ok($('#sheetRoot .ai-pending').length === 0 || $('#sheetRoot').textContent.indexOf('已执行') >= 0, '执行过的建议不会再被重复执行');
+  AI.ask = realAsk;
+  UI.closeSheet();
+  await wait(450);
+  AI.config = oldAIConfig;
+  AI.save();
+  await wait(200);
 
   UI.go('home');
   await wait(250);
