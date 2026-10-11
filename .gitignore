@@ -1,6 +1,7 @@
 # ---- 打包 APK 的工具链与中间产物（体积大，不入库）----
 .buildtools/
 android-build/
+tests/out/
 
 # ---- Capacitor 方案（可选）产生的目录 ----
 node_modules/
@@ -17,7 +18,10 @@ desktop.ini
 .vscode/
 .idea/
 
-# ---- 用户本地数据（隐私账单，绝不入库）----
+# ---- 自动备份与同步数据（含真实账单，绝不入库）----
+backups/
+.server.json
+.sync-data.json
 web/data/
 backup-*.json
 记账备份-*.json

@@ -114,6 +114,9 @@
     hideExcludedInList: false,  // 明细列表默认隐藏“不计入统计”的账单
     autoClassifyOnImport: true,
     dedupeOnImport: true,
+    autoBackup: true,          // 自动备份开关
+    backupKeep: 10,            // 保留最近几份应用内快照
+    backupIntervalHours: 24,   // 隔多久自动备份一次
     rules: [],                  // 用户自定义规则 [{id,kw:[],cat,type}]
     onboarded: false
   };

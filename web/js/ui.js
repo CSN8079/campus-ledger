@@ -455,16 +455,18 @@
   /* ---------------- 自定义区间 ---------------- */
   UI.pickCustomRange = function (onDone) {
     const now = new Date();
+    const fromField = UI.dateField({ value: U.toISODate(U.addMonths(now, -1)), withTime: false });
+    const toField = UI.dateField({ value: U.toISODate(now), withTime: false });
     const body = U.el('div', null, [
-      U.el('div', { class: 'field' }, [U.el('label', { text: '开始日期' }), U.el('input', { class: 'input', type: 'date', id: 'customFrom', value: U.toISODate(U.addMonths(now, -1)) })]),
-      U.el('div', { class: 'field' }, [U.el('label', { text: '结束日期' }), U.el('input', { class: 'input', type: 'date', id: 'customTo', value: U.toISODate(now) })])
+      U.el('div', { class: 'field' }, [U.el('label', { text: '开始日期' }), fromField]),
+      U.el('div', { class: 'field' }, [U.el('label', { text: '结束日期' }), toField])
     ]);
     UI.openSheet({
       title: '选择日期范围',
       body: body,
       actions: [{
         label: '确定', primary: true, onClick: () => {
-          const from = $('#customFrom').value, to = $('#customTo').value;
+          const from = fromField.getValue(), to = toField.getValue();
           if (!from || !to) { UI.toast('请选择完整日期', 'err'); return; }
           if (from > to) { UI.toast('开始日期不能晚于结束日期', 'err'); return; }
           UI.closeSheet();
@@ -579,6 +581,27 @@
         U.el('div', { style: { fontSize: '12px', color: 'var(--text-soft)', lineHeight: '1.7' }, text: '已从上方合计中排除：' + bits.join('；') })
       ]));
     }
+
+    /* 导出当前区间的报表 */
+    view.appendChild(U.el('div', { class: 'chips', style: { marginBottom: '12px' } }, [
+      U.el('button', { class: 'chip', text: '📊 导出 Excel', onclick: () => {
+        const R = global.Report;
+        const name = R.exportExcel({ list: list, range: range });
+        UI.toast('已导出 ' + name, 'ok');
+      } }),
+      U.el('button', { class: 'chip', text: '🖼 生成图片报告', onclick: async (e) => {
+        e.target.disabled = true;
+        e.target.textContent = '生成中…';
+        try {
+          const name = await global.Report.exportImage({ list: list, range: range });
+          UI.toast('已生成 ' + name + '，可以直接发给爸妈看', 'ok');
+        } catch (err) {
+          UI.toast('生成失败：' + err.message, 'err');
+        }
+        e.target.disabled = false;
+        e.target.textContent = '🖼 生成图片报告';
+      } })
+    ]));
 
     if (!inc.count) {
       view.appendChild(U.el('div', { class: 'card' }, [emptyBox('📊', '这个区间还没有计入统计的账单')]));
@@ -770,6 +793,83 @@
       ])
     ]));
 
+    /* 导出报表 */
+    view.appendChild(U.el('div', { class: 'card' }, [
+      U.el('div', { class: 'card-title' }, [U.el('h3', { text: '导出报表给家人看' })]),
+      U.el('p', { style: { fontSize: '12.5px', color: 'var(--text-soft)', lineHeight: '1.8', margin: '0 0 10px' },
+        text: '导出 Excel 表格（含明细、分类汇总、周期汇总），或生成一张收支报告图片，直接发微信给爸妈看。' }),
+      U.el('div', { style: { display: 'flex', gap: '8px', flexWrap: 'wrap' } }, [
+        U.el('button', { class: 'btn btn-sm btn-primary', text: '导出报表', onclick: () => UI.openExportSheet() })
+      ])
+    ]));
+
+    /* 自动备份 */
+    if (global.Backup) {
+      const bk = global.Backup;
+      const bkCard = U.el('div', { class: 'card' });
+      bkCard.appendChild(U.el('div', { class: 'card-title' }, [
+        U.el('h3', { text: '自动备份' }),
+        U.el('span', { class: 'hint', text: Store.settings.autoBackup !== false ? '已开启' : '已关闭' })
+      ]));
+      bkCard.appendChild(U.el('p', { style: { fontSize: '12.5px', color: 'var(--text-soft)', lineHeight: '1.8', margin: '0 0 10px' }, text:
+        '自动把整份数据在本机存一份快照，随时可以还原到某个时间点。' +
+        (global.AndroidApp ? '安卓版还会同时把备份文件写进手机的「下载」目录。' : '电脑上运行的服务也会自动在 backups 目录留档。') }));
+      bkCard.appendChild(U.el('div', { style: { fontSize: '12.5px', color: 'var(--text-soft)', marginBottom: '10px' }, text:
+        '上次备份：' + (bk.lastAt() ? bk.timeText(bk.lastAt()) : '还没有备份过') }));
+      bkCard.appendChild(U.el('div', { style: { display: 'flex', gap: '8px', flexWrap: 'wrap' } }, [
+        U.el('button', { class: 'btn btn-sm btn-primary', text: '立即备份', onclick: async (e) => {
+          e.target.disabled = true;
+          try {
+            const info = await bk.run(true);
+            UI.toast(info ? '已备份 ' + info.txCount + ' 条账目' : '没有可备份的数据', info ? 'ok' : '');
+          } catch (err) { UI.toast('备份失败：' + err.message, 'err'); }
+          e.target.disabled = false;
+          UI.renderSettings();
+        } }),
+        U.el('button', { class: 'btn btn-sm', text: '备份管理', onclick: () => UI.openBackupSheet() })
+      ]));
+      view.appendChild(bkCard);
+    }
+
+    /* 与电脑同步 */
+    const Sync = global.Sync;
+    if (Sync) {
+      const syncCard = U.el('div', { class: 'card' });
+      syncCard.appendChild(U.el('div', { class: 'card-title' }, [
+        U.el('h3', { text: '与电脑同步' }),
+        U.el('span', { class: 'hint', text: Sync.statusText() })
+      ]));
+
+      const desc = Sync.isApp()
+        ? (Sync.config.url
+          ? '已连接电脑：' + Sync.config.url
+          : '还没有填写电脑地址。填好之后，手机不用打开浏览器就能把账目同步到电脑，也能把电脑上的账目取回来。')
+        : '这个页面由电脑上的服务提供，可以直接同步：两边都会自动比较每一条的修改时间，把新的那一份保留下来。';
+      syncCard.appendChild(U.el('p', { style: { fontSize: '12.5px', color: 'var(--text-soft)', lineHeight: '1.8', margin: '0 0 8px' }, text: desc }));
+
+      syncCard.appendChild(U.el('div', { style: { fontSize: '12.5px', color: 'var(--text-soft)', lineHeight: '1.9' }, html:
+        '上次同步：<b>' + U.esc(Sync.lastSyncText()) + '</b>' +
+        (Sync.config.lastResult ? '　上传 ' + Sync.config.lastResult.pushed + ' 项 / 下载 ' + Sync.config.lastResult.pulled + ' 项' : '') +
+        '<br>本机名称：<b>' + U.esc(Sync.config.deviceName || Sync.guessDeviceName()) + '</b>' }));
+
+      syncCard.appendChild(U.el('div', { style: { display: 'flex', gap: '8px', flexWrap: 'wrap', marginTop: '12px' } }, [
+        U.el('button', {
+          class: 'btn btn-sm btn-primary', text: '立即同步',
+          onclick: async (e) => {
+            e.target.disabled = true;
+            e.target.textContent = '同步中…';
+            try { await Sync.sync({ toast: true }); }
+            catch (err) { UI.toast('同步失败：' + err.message, 'err'); }
+            e.target.disabled = false;
+            e.target.textContent = '立即同步';
+            UI.renderSettings();
+          }
+        }),
+        U.el('button', { class: 'btn btn-sm', text: '同步设置', onclick: () => UI.openSyncSheet() })
+      ]));
+      view.appendChild(syncCard);
+    }
+
     /* 关于 */
     view.appendChild(U.el('div', { class: 'card' }, [
       U.el('div', { class: 'card-title' }, [U.el('h3', { text: '关于' })]),
@@ -899,7 +999,7 @@
       U.el('div', { class: 'field' }, [U.el('label', { text: '分类' }), catGrid]),
 
       U.el('div', { class: 'row row-split' }, [
-        U.el('div', { class: 'field' }, [U.el('label', { text: '时间' }), U.el('input', { class: 'input', type: 'datetime-local', value: model.time, oninput: (e) => { model.time = e.target.value; } })]),
+        U.el('div', { class: 'field' }, [U.el('label', { text: '时间' }), UI.dateField({ value: model.time, withTime: true, onChange: (v) => { model.time = v; } })]),
         U.el('div', { class: 'field' }, [U.el('label', { text: '账户' }), accountSel])
       ]),
 
@@ -1046,7 +1146,7 @@
     const body = U.el('div');
     const amountInput = U.el('input', { class: 'input', type: 'text', inputmode: 'decimal', value: String(tx.amount) });
     const who = U.el('input', { class: 'input', placeholder: '例如：爸爸、妈妈、宿舍同学', value: tx.counterparty ? '' : '' });
-    const when = U.el('input', { class: 'input', type: 'date', value: U.toISODate(new Date()) });
+    const when = UI.dateField({ value: U.toISODate(new Date()), withTime: false });
     const accSel = U.el('select', { class: 'select' });
     ['微信', '支付宝', '银行卡', '现金', '其他'].forEach((a) => accSel.appendChild(U.el('option', { value: a, text: a, selected: a === '微信' })));
 
@@ -1079,7 +1179,7 @@
             if (!amt) { UI.toast('请填写金额', 'err'); return; }
             await Store.settleReimburse(tx.id, {
               amount: amt,
-              time: when.value,
+              time: when.getValue(),
               account: accSel.value,
               counterparty: who.value.trim() || '报销',
               note: '报销款到账'
@@ -1228,8 +1328,8 @@
     const body = U.el('div', null, [
       U.el('div', { class: 'field' }, [U.el('label', { text: '学期名称' }), U.el('input', { class: 'input', value: model.name, oninput: (e) => { model.name = e.target.value; } })]),
       U.el('div', { class: 'row row-split' }, [
-        U.el('div', { class: 'field' }, [U.el('label', { text: '开学日期' }), U.el('input', { class: 'input', type: 'date', value: model.start, oninput: (e) => { model.start = e.target.value; } })]),
-        U.el('div', { class: 'field' }, [U.el('label', { text: '结束日期' }), U.el('input', { class: 'input', type: 'date', value: model.end, oninput: (e) => { model.end = e.target.value; } })])
+        U.el('div', { class: 'field' }, [U.el('label', { text: '开学日期' }), UI.dateField({ value: model.start, withTime: false, onChange: (v) => { model.start = v; } })]),
+        U.el('div', { class: 'field' }, [U.el('label', { text: '结束日期' }), UI.dateField({ value: model.end, withTime: false, onChange: (v) => { model.end = v; } })])
       ])
     ]);
     UI.openSheet({
@@ -1426,8 +1526,13 @@
       const kindName = { wechat: '微信支付账单', alipay: '支付宝账单', generic: '通用账单' }[result.detect && result.detect.kind] || '账单';
       U.append(stat, [
         U.el('div', { html: '<b>' + U.esc(result.fileName || '') + '</b>　识别为「' + U.esc(kindName) + '」，编码 ' + U.esc(result.encoding || '-') }),
-        U.el('div', { html: '共解析 <b>' + items.length + '</b> 条　·　重复 <b>' + result.stats.dup + '</b> 条　·　跳过 <b>' + result.stats.skipped + '</b> 条' + (result.stats.ignored ? '　·　忽略「不计收支」<b>' + result.stats.ignored + '</b> 条' : '') }),
-        U.el('div', { html: '已勾选 <b>' + picked + '</b> 条，净额 <b>' + U.esc(U.fmtMoney(sum)) + '</b>' })
+        U.el('div', { html: '共解析 <b>' + items.length + '</b> 条　·　重复 <b>' + (result.stats.dup || 0) + '</b> 条　·　疑似重复 <b>' + (result.stats.suspect || 0) + '</b> 条　·　跳过 <b>' + result.stats.skipped + '</b> 条' + (result.stats.ignored ? '　·　忽略「不计收支」<b>' + result.stats.ignored + '</b> 条' : '') }),
+        U.el('div', { html: '已勾选 <b>' + picked + '</b> 条，净额 <b>' + U.esc(U.fmtMoney(sum)) + '</b>' }),
+        (result.stats.suspect ? U.el('div', {
+          class: 'imp-warn',
+          html: '⚠️ 有 <b>' + result.stats.suspect + '</b> 条与已有记录「同一天、同金额」，已自动取消勾选以免重复记账。' +
+            '如果确实是两笔不同的消费，把鼠标移到「疑似重复」上可以看到原因，再手动勾选即可。'
+        }) : null)
       ]);
     }
 
@@ -1454,19 +1559,31 @@
       const cell = it._statusCell;
       if (!cell) return;
       U.clear(cell);
-      if (it.dup) cell.appendChild(U.el('span', { class: 'badge warn', text: '重复' }));
+      if (it.dup) cell.appendChild(U.el('span', { class: 'badge warn', title: it.dupReason || '', text: '重复' }));
+      else if (it.suspect) cell.appendChild(U.el('span', { class: 'badge warn', title: it.suspectReason || '', text: '疑似重复' }));
       else if (it.tx.excludeStat) cell.appendChild(U.el('span', { class: 'badge mute', text: '不计入' }));
       else cell.appendChild(U.el('span', { class: 'badge primary', text: '新增' }));
+    }
+
+    /* 行样式：重复=红底、疑似重复=黄底、未勾选=淡化 */
+    function rowClass(it) {
+      if (it.dup) return 'is-dup';
+      if (it.suspect) return 'is-suspect';
+      return it.selected ? '' : 'is-skip';
     }
 
     function renderRows() {
       U.clear(tbody);
       items.slice(0, shown).forEach((it) => {
         const d = new Date(it.tx.time);
-        const tr = U.el('tr', { class: it.dup ? 'is-dup' : (it.selected ? '' : 'is-skip') });
+        const tr = U.el('tr', { class: rowClass(it) });
         const cb = U.el('input', {
           type: 'checkbox', checked: it.selected,
-          onchange: (e) => { it.selected = e.target.checked; tr.classList.toggle('is-skip', !it.selected); refreshStat(); }
+          onchange: (e) => {
+            it.selected = e.target.checked;
+            tr.className = rowClass(it);
+            refreshStat();
+          }
         });
         tr.appendChild(U.el('td', null, [cb]));
         tr.appendChild(U.el('td', { text: U.toISODate(d) }));
@@ -1504,7 +1621,8 @@
       U.el('button', { class: 'btn btn-sm', text: '全选', onclick: () => { items.forEach((it) => { it.selected = true; }); renderRows(); } }),
       U.el('button', { class: 'btn btn-sm', text: '全不选', onclick: () => { items.forEach((it) => { it.selected = false; }); renderRows(); } }),
       U.el('button', { class: 'btn btn-sm', text: '反选', onclick: () => { items.forEach((it) => { it.selected = !it.selected; }); renderRows(); } }),
-      U.el('button', { class: 'btn btn-sm', text: '仅选非重复', onclick: () => { items.forEach((it) => { it.selected = !it.dup; }); renderRows(); } })
+      U.el('button', { class: 'btn btn-sm', text: '仅选非重复', onclick: () => { items.forEach((it) => { it.selected = !it.dup && !it.suspect; }); renderRows(); } }),
+      U.el('button', { class: 'btn btn-sm', text: '连疑似重复一起选', onclick: () => { items.forEach((it) => { it.selected = !it.dup; }); renderRows(); } })
     ]);
 
     const body = U.el('div', null, [stat, toggleToolbar, tableWrap, moreBtn]);
@@ -1522,7 +1640,7 @@
         } },
         { label: '重新选择文件', onClick: () => UI.openImportSheet() }
       ],
-      note: '重复的账单默认不勾选。导入后可在「明细」里逐条调整分类或标记为不计入统计。'
+      note: '重复与疑似重复的账单默认都不勾选。导入后可在「明细」里逐条调整分类或标记为不计入统计。'
     });
   }
 
@@ -1619,15 +1737,13 @@
   UI.confirmClear = async function () {
     const ok = await UI.confirm({
       title: '清空全部数据',
-      message: '这会删除设备上的所有账单、分类和设置，且无法恢复。建议先导出备份。确定要继续吗？',
+      message: '这会删除设备上的所有账单、分类和设置。应用内的备份快照会保留，之后仍可在「自动备份 → 备份管理」里还原。确定要继续吗？',
       okText: '我已备份，继续', danger: true
     });
     if (!ok) return;
     const ok2 = await UI.confirm({ title: '再次确认', message: '真的要清空吗？此操作不可撤销。', okText: '清空', danger: true });
     if (!ok2) return;
-    await global.DB.clearAll();
-    Store.tx = []; Store.categories = []; Store.settings = Object.assign({}, D.settings);
-    Store.reindex();
+    await Store.clearAllData();
     await Store.applyPack('college', true);
     const g = D.guessSemester(new Date());
     const sem = { id: U.uuid(), name: g.name, start: g.start, end: g.end };
@@ -1695,6 +1811,401 @@
       title: (type === 'expense' ? '支出分类' : '收入分类') + '管理（' + cats.length + '）',
       body: body,
       actions: [{ label: '完成', primary: true, onClick: () => UI.closeSheet() }]
+    });
+  };
+
+  global.UI = UI;
+})(window);
+/* ============================================================
+   ui.js - 界面渲染与交互（第六部分：与电脑同步的设置面板）
+   ============================================================ */
+(function (global) {
+  'use strict';
+
+  const U = global.U, Store = global.Store, Sync = global.Sync;
+  const UI = global.UI;
+
+  UI.openSyncSheet = function () {
+    const isApp = Sync.isApp();
+    let url = Sync.config.url || '';
+    let pwd = '';
+    let autoSync = !!Sync.config.autoSync;
+    let deviceName = Sync.config.deviceName || Sync.guessDeviceName();
+
+    const status = U.el('div', { class: 'sheet-note' });
+    function say(msg, kind) {
+      status.textContent = msg || '';
+      status.style.color = kind === 'err' ? 'var(--expense)' : (kind === 'ok' ? 'var(--income)' : '');
+    }
+
+    const urlInput = U.el('input', {
+      class: 'input', placeholder: '例如 192.168.1.7:8788', value: url, autocomplete: 'off',
+      oninput: (e) => { url = e.target.value; }
+    });
+    const pwdInput = U.el('input', {
+      class: 'input', type: 'password', inputmode: 'numeric', autocomplete: 'off',
+      placeholder: '电脑窗口里显示的 6 位口令', oninput: (e) => { pwd = e.target.value; }
+    });
+    const nameInput = U.el('input', {
+      class: 'input', value: deviceName, oninput: (e) => { deviceName = e.target.value; }
+    });
+    const autoSwitch = U.el('button', {
+      class: 'switch' + (autoSync ? ' is-on' : ''),
+      onclick: (e) => { autoSync = !autoSync; e.target.classList.toggle('is-on'); }
+    });
+
+    function commitConfig() {
+      Sync.config.url = Sync.normalizeUrl(url);
+      Sync.config.deviceName = deviceName.trim() || Sync.guessDeviceName();
+      Sync.config.autoSync = autoSync;
+      Sync.save();
+    }
+
+    const body = U.el('div');
+    body.appendChild(U.el('p', { style: { fontSize: '12.5px', color: 'var(--text-soft)', lineHeight: '1.85', margin: '0 0 12px' }, html: isApp
+      ? '在电脑上运行 <b>启动记账本.bat</b>，窗口里会显示一个「手机地址」和一个 6 位口令。把地址和口令填到下面，手机就能直接和电脑同步数据，不用再开浏览器。'
+      : '当前页面就是电脑上的服务提供的，可以直接同步。' }));
+
+    if (isApp) {
+      body.appendChild(U.el('div', { class: 'field' }, [U.el('label', { text: '电脑地址' }), urlInput]));
+      body.appendChild(U.el('div', { class: 'field' }, [U.el('label', { text: '访问口令' }), pwdInput]));
+    }
+    body.appendChild(U.el('div', { class: 'field' }, [U.el('label', { text: '本机名称（用来区分是哪台设备）' }), nameInput]));
+    body.appendChild(U.el('div', { class: 'switch-row' }, [
+      U.el('div', { class: 'sr-body' }, [
+        U.el('div', { class: 'sr-title', text: '自动同步' }),
+        U.el('div', { class: 'sr-desc', text: '打开应用时、以及记账之后，自动和电脑同步一次' })
+      ]),
+      autoSwitch
+    ]));
+
+    body.appendChild(U.el('div', { class: 'section-label', text: '同步规则' }));
+    body.appendChild(U.el('div', {
+      style: { fontSize: '12.5px', color: 'var(--text-soft)', lineHeight: '1.9' },
+      html: '・两边各自保存一份数据，同步时逐条比较「最后修改时间」，新的那份胜出<br>' +
+        '・删除也会同步过去，被删掉的账目不会从另一台设备跑回来<br>' +
+        '・同一时刻两边都改了同一条时，保留后改的那一份'
+    }));
+    body.appendChild(status);
+
+    const actions = [];
+    if (isApp) {
+      actions.push({
+        label: '测试连接',
+        onClick: async () => {
+          if (!url.trim()) { say('请先填写电脑地址', 'err'); return; }
+          commitConfig();
+          say('正在连接…');
+          try {
+            if (pwd) await Sync.login(pwd);
+            const info = await Sync.test();
+            say('连接成功：电脑上已有 ' + info.txCount + ' 条账目（' + info.app + '）', 'ok');
+          } catch (e) {
+            say('连接失败：' + e.message, 'err');
+          }
+        }
+      });
+    }
+    actions.push({
+      label: '连接并同步', primary: true,
+      onClick: async () => {
+        if (isApp && !url.trim()) { say('请先填写电脑地址', 'err'); return; }
+        commitConfig();
+        say('正在同步…');
+        try {
+          if (isApp && pwd) await Sync.login(pwd);
+          const r = await Sync.sync();
+          say('同步完成：上传 ' + r.pushed + ' 项，下载 ' + r.pulled + ' 项，电脑上共 ' + r.serverTotal + ' 条', 'ok');
+          setTimeout(() => UI.renderSettings(), 100);
+        } catch (e) {
+          say('同步失败：' + e.message, 'err');
+        }
+      }
+    });
+    if (isApp && Sync.config.url) {
+      actions.push({
+        label: '断开', danger: true,
+        onClick: () => {
+          Sync.config.url = '';
+          Sync.config.token = '';
+          Sync.config.lastSyncAt = 0;
+          Sync.config.lastResult = null;
+          Sync.save();
+          UI.closeSheet();
+          UI.renderSettings();
+          UI.toast('已断开与电脑的连接');
+        }
+      });
+    }
+    actions.push({ label: '关闭', onClick: () => UI.closeSheet() });
+
+    UI.openSheet({
+      title: '与电脑同步',
+      body: body,
+      actions: actions,
+      note: '同步只在你自己的设备之间进行：手机把数据发到电脑上运行的服务，电脑再合并回一份完整数据。'
+    });
+  };
+
+  global.UI = UI;
+})(window);
+/* ============================================================
+   ui.js - 界面渲染与交互（第七部分：报表导出 / 自动备份）
+   ============================================================ */
+(function (global) {
+  'use strict';
+
+  const U = global.U, Store = global.Store, Stats = global.Stats, Report = global.Report, Backup = global.Backup;
+  const UI = global.UI;
+
+  /* ============================================================
+     一、导出报表
+     ============================================================ */
+  UI.openExportSheet = function () {
+    let period = 'month';
+    let custom = null;
+
+    const seg = U.el('div', { class: 'seg' });
+    const preview = U.el('div', { class: 'dp-preview' });
+
+    const PERIODS = [
+      { id: 'week', name: '本周' }, { id: 'month', name: '本月' },
+      { id: 'lastMonth', name: '上月' }, { id: 'semester', name: '本学期' },
+      { id: 'year', name: '今年' }, { id: 'all', name: '全部' },
+      { id: 'custom', name: '自定义' }
+    ];
+
+    function range() { return Stats.range(period, custom); }
+    function dataList() {
+      const r = range();
+      return Store.query({ from: r.from, to: r.to, includeExcluded: true, includeHidden: true });
+    }
+
+    function refresh() {
+      const r = range();
+      const list = dataList();
+      const full = Stats.full(list);
+      U.clear(preview);
+      U.append(preview, [
+        U.el('div', { text: r.label }),
+        U.el('div', { html: '收入 <b>' + U.esc(U.fmtMoney(full.included.income)) + '</b>　' +
+          '支出 <b>' + U.esc(U.fmtMoney(full.included.expense)) + '</b>　共 ' + list.length + ' 条记录' })
+      ]);
+    }
+
+    function renderSeg() {
+      U.clear(seg);
+      PERIODS.forEach(function (it) {
+        seg.appendChild(U.el('button', {
+          class: it.id === period ? 'is-active' : '',
+          text: it.name,
+          onclick: function () {
+            if (it.id === 'custom') {
+              UI.pickCustomRange(function (r) { custom = r; period = 'custom'; renderSeg(); refresh(); });
+              return;
+            }
+            period = it.id;
+            renderSeg();
+            refresh();
+          }
+        }));
+      });
+    }
+
+    renderSeg();
+    refresh();
+
+    const body = U.el('div', null, [
+      U.el('p', { style: { fontSize: '12.5px', color: 'var(--text-soft)', lineHeight: '1.85', margin: '0 0 12px' },
+        text: '先选好时间范围，再选导出成表格还是图片。图片是一页纸的收支报告，直接发微信给爸妈看最合适。' }),
+      seg,
+      preview,
+      U.el('div', { class: 'section-label', text: '导出格式' }),
+      U.el('div', { style: { display: 'flex', gap: '8px', flexWrap: 'wrap' } }, [
+        U.el('button', {
+          class: 'btn btn-primary', text: '📊 导出 Excel 表格',
+          onclick: function () {
+            try {
+              const name = Report.exportExcel({ list: dataList(), range: range() });
+              UI.toast('已导出 ' + name + '，可用 Excel / WPS 打开', 'ok');
+            } catch (e) { UI.toast('导出失败：' + e.message, 'err'); }
+          }
+        }),
+        U.el('button', {
+          class: 'btn', text: '🖼 生成图片报告',
+          onclick: async function (e) {
+            e.target.disabled = true;
+            const old = e.target.textContent;
+            e.target.textContent = '生成中…';
+            try {
+              const name = await Report.exportImage({ list: dataList(), range: range() });
+              UI.toast('已生成 ' + name, 'ok');
+            } catch (err) { UI.toast('生成失败：' + err.message, 'err'); }
+            e.target.disabled = false;
+            e.target.textContent = old;
+          }
+        })
+      ]),
+      U.el('div', { class: 'sheet-note', html:
+        '・Excel 表格含 4 个工作表：周期汇总、账目明细、分类汇总、每日收支<br>' +
+        '・图片是浅色配色，适合直接发给家人<br>' +
+        '・导出文件在本机生成，不会上传' })
+    ]);
+
+    UI.openSheet({ title: '导出报表', body: body, actions: [{ label: '关闭', onClick: function () { UI.closeSheet(); } }] });
+  };
+
+  /* ============================================================
+     二、自动备份
+     ============================================================ */
+  UI.openBackupSheet = function () {
+    const listBox = U.el('div');
+    let enabled = Store.settings.autoBackup !== false;
+    let interval = Store.settings.backupIntervalHours || 24;
+    let keep = Store.settings.backupKeep || 10;
+
+    async function refreshList() {
+      U.clear(listBox);
+      const list = (await Backup.list()).slice().sort(function (a, b) { return b.at - a.at; });
+      if (!list.length) {
+        listBox.appendChild(U.el('div', { class: 'empty' }, [
+          U.el('span', { class: 'big', text: '💾' }),
+          U.el('span', { text: '还没有备份，点上面的「立即备份」试试' })
+        ]));
+        return;
+      }
+      list.forEach(function (item) {
+        listBox.appendChild(U.el('div', { class: 'cat-row' }, [
+          U.el('div', { class: 'ci', text: '💾' }),
+          U.el('div', { class: 'cn' }, [
+            U.el('b', { text: Backup.timeText(item.at) + (item.reason === 'manual' ? '（手动）' : '') }),
+            U.el('small', { text: item.txCount + ' 条账目 · ' + (item.catCount || 0) + ' 个分类 · ' + Backup.sizeText(item.size) })
+          ]),
+          U.el('div', { class: 'ops' }, [
+            U.el('button', {
+              class: 'btn btn-sm', text: '还原',
+              onclick: async function () {
+                const ok = await UI.confirm({
+                  title: '还原这份备份',
+                  message: '将用 ' + Backup.timeText(item.at) + ' 的快照覆盖当前全部账目。' +
+                    '系统会先自动备份一份当前数据，所以不用怕点错。',
+                  okText: '还原', danger: true
+                });
+                if (!ok) return;
+                try {
+                  await Backup.create('before-restore');
+                  const r = await Backup.restore(item.key);
+                  UI.closeSheet();
+                  UI.toast('已还原 ' + r.tx + ' 条账目', 'ok');
+                } catch (e) { UI.toast('还原失败：' + e.message, 'err'); }
+              }
+            }),
+            U.el('button', {
+              class: 'btn btn-sm', text: '导出',
+              onclick: async function () {
+                try {
+                  const json = await Backup.read(item.key);
+                  U.download('记账备份-' + U.toISODate(new Date(item.at)) + '.json', json, 'application/json');
+                  UI.toast('已导出备份文件', 'ok');
+                } catch (e) { UI.toast('导出失败：' + e.message, 'err'); }
+              }
+            }),
+            U.el('button', {
+              class: 'btn btn-sm btn-danger', text: '删除',
+              onclick: async function () {
+                await Backup.remove(item.key);
+                refreshList();
+                UI.renderSettings();
+              }
+            })
+          ])
+        ]));
+      });
+    }
+
+    const intervalSeg = U.el('div', { class: 'seg' });
+    [{ v: 12, n: '12 小时' }, { v: 24, n: '每天' }, { v: 72, n: '3 天' }, { v: 168, n: '每周' }].forEach(function (it) {
+      intervalSeg.appendChild(U.el('button', {
+        class: interval === it.v ? 'is-active' : '',
+        text: it.n,
+        onclick: async function () {
+          interval = it.v;
+          await Store.updateSettings({ backupIntervalHours: it.v });
+          Array.prototype.forEach.call(intervalSeg.children, function (b) {
+            b.classList.toggle('is-active', b.textContent === it.n);
+          });
+        }
+      }));
+    });
+
+    const keepSeg = U.el('div', { class: 'seg' });
+    [5, 10, 20, 30].forEach(function (v) {
+      keepSeg.appendChild(U.el('button', {
+        class: (keep === v ? 'is-active' : ''),
+        text: v + ' 份',
+        onclick: async function () {
+          keep = v;
+          await Store.updateSettings({ backupKeep: v });
+          Array.prototype.forEach.call(keepSeg.children, function (b) {
+            b.classList.toggle('is-active', b.textContent === v + ' 份');
+          });
+        }
+      }));
+    });
+
+    const body = U.el('div', null, [
+      U.el('p', { style: { fontSize: '12.5px', color: 'var(--text-soft)', lineHeight: '1.85', margin: '0 0 12px' }, text:
+        '自动把整份数据在本机存一份快照，可以还原到过去某个时间点。' +
+        (global.AndroidApp
+          ? '安卓版还会同时把备份文件写进手机的「下载」目录，即使应用被卸载也还在。'
+          : '电脑上运行的服务也会自动在 backups 目录留档。') }),
+
+      U.el('div', { class: 'switch-row' }, [
+        U.el('div', { class: 'sr-body' }, [
+          U.el('div', { class: 'sr-title', text: '开启自动备份' }),
+          U.el('div', { class: 'sr-desc', text: '打开应用时、以及记账之后，按下面的间隔自动备份' })
+        ]),
+        U.el('button', {
+          class: 'switch' + (enabled ? ' is-on' : ''),
+          onclick: async function (e) {
+            enabled = !enabled;
+            e.target.classList.toggle('is-on');
+            await Store.updateSettings({ autoBackup: enabled });
+            UI.renderSettings();
+          }
+        })
+      ]),
+
+      U.el('div', { class: 'section-label', text: '备份间隔' }),
+      intervalSeg,
+      U.el('div', { class: 'section-label', text: '最多保留' }),
+      keepSeg,
+
+      U.el('div', { style: { display: 'flex', gap: '8px', marginTop: '14px' } }, [
+        U.el('button', {
+          class: 'btn btn-primary', text: '立即备份',
+          onclick: async function (e) {
+            e.target.disabled = true;
+            try {
+              const info = await Backup.run(true);
+              UI.toast(info ? '已备份 ' + info.txCount + ' 条账目' : '没有可备份的数据', info ? 'ok' : '');
+              refreshList();
+              UI.renderSettings();
+            } catch (err) { UI.toast('备份失败：' + err.message, 'err'); }
+            e.target.disabled = false;
+          }
+        })
+      ]),
+
+      U.el('div', { class: 'section-label', text: '备份记录' }),
+      listBox
+    ]);
+
+    refreshList();
+    UI.openSheet({
+      title: '自动备份',
+      body: body,
+      actions: [{ label: '完成', primary: true, onClick: function () { UI.closeSheet(); } }]
     });
   };
 

@@ -50,11 +50,14 @@
   ok(!!amt, '「记一笔」表单可以打开');
   amt.value = '25.50';
   amt.dispatchEvent(new Event('input', { bubbles: true }));
-  const fields = $$('#sheetRoot .field .input');
-  fields[1].value = '校园食堂';
-  fields[1].dispatchEvent(new Event('input', { bubbles: true }));
-  fields[2].value = '午餐';
-  fields[2].dispatchEvent(new Event('input', { bubbles: true }));
+  // 日期字段已经换成自绘控件，这里按占位文字定位输入框，避免顺序变化导致错位
+  const inputs = $$('#sheetRoot .field .input');
+  const srcInput = inputs.find((el) => (el.placeholder || '').indexOf('食堂') >= 0) || inputs[0];
+  const itemInput = inputs.find((el) => (el.placeholder || '').indexOf('午餐') >= 0) || inputs[1];
+  srcInput.value = '校园食堂';
+  srcInput.dispatchEvent(new Event('input', { bubbles: true }));
+  itemInput.value = '午餐';
+  itemInput.dispatchEvent(new Event('input', { bubbles: true }));
   $$('#sheetRoot .sheet-actions .btn')[0].click();
   const t1 = Date.now();
   while (Store.tx.length < 1 && Date.now() - t1 < 3000) await wait(60);
@@ -215,7 +218,48 @@
   UI.closeSheet();
   await wait(340);
 
-  /* ---------- 16. 安卓 App 环境适配 ---------- */
+  /* ---------- 16. 自绘日期选择器（不使用系统原生控件） ---------- */
+  UI.go('list');
+  UI.openTxSheet(null);
+  await wait(500);
+  ok(!$('#sheetRoot').querySelector('input[type="datetime-local"], input[type="date"]'),
+    '记账表单里没有系统原生日期控件');
+  const df = $('#sheetRoot .date-field');
+  ok(!!df, '记账表单使用自绘的日期字段：' + (df ? df.textContent.trim() : '-'));
+  if (df) {
+    df.click();
+    await wait(500);
+    ok(!!$('#pickerRoot .dp-grid'), '点击后弹出自绘日历面板');
+    ok($('#pickerRoot').querySelectorAll('.dp-cell').length >= 28,
+      '日历渲染出日期格子（' + $('#pickerRoot').querySelectorAll('.dp-cell').length + ' 个）');
+    ok(!!$('#pickerRoot .dp-time-grid'), '面板里可以选择具体时间');
+    const cells = $$('#pickerRoot .dp-cell');
+    cells[3].click();
+    await wait(220);
+    ok($('#pickerRoot .dp-preview').textContent.indexOf('已选') >= 0, '面板底部显示已选日期预览');
+    ok(!!$('#pickerRoot .dp-tcell'), '时间选项渲染正常');
+    const before = df.textContent;
+    $$('#pickerRoot .sheet-actions .btn')[0].click();
+    await wait(500);
+    ok(df.textContent.trim().length > 0 && df.textContent !== before,
+      '选中的日期回填到表单：' + df.textContent.trim());
+    ok(!!$('#sheetRoot .date-field'), '日期面板关闭后记账表单依然存在（独立浮层，不覆盖表单）');
+  }
+  UI.closeSheet();
+  await wait(400);
+
+  /* ---------- 17. 与电脑同步 ---------- */
+  UI.go('settings');
+  await wait(320);
+  ok($('#view-settings').textContent.indexOf('与电脑同步') >= 0, '设置页有「与电脑同步」入口');
+  UI.openSyncSheet();
+  await wait(450);
+  ok($('#sheetRoot').textContent.indexOf('自动同步') >= 0, '同步面板里有自动同步开关');
+  ok($('#sheetRoot').textContent.indexOf('同步规则') >= 0, '同步面板说明了合并规则');
+  UI.closeSheet();
+  await wait(380);
+
+  /* ---------- 18. 安卓 App 环境适配 ---------- */
   const saved = [];
   window.AndroidApp = { save: function (name, b64) { saved.push({ name: name, len: (b64 || '').length }); } };
   U.download('备份测试.json', '{"ok":1}', 'application/json');
@@ -225,12 +269,94 @@
   ok(saved.length === 1 && saved[0].len > 0, '传给原生的内容非空');
   delete window.AndroidApp;
 
+  /* ---------- 19. 导出 Excel 与图片报告 ---------- */
+  const savedFiles = [];
+  window.AndroidApp = { save: function (name, b64) { savedFiles.push({ name: name, b64: b64 }); } };
+
+  const exportRange = Stats.range('all');
+  const exportList = Store.query({ from: exportRange.from, to: exportRange.to, includeExcluded: true, includeHidden: true });
+
+  const xlsxName = Report.exportExcel({ list: exportList, range: exportRange });
+  await wait(800);
+  const xlsxFile = savedFiles.find((f) => f.name === xlsxName);
+  ok(!!xlsxFile, 'Excel 导出成功：' + xlsxName);
+  if (xlsxFile) {
+    const bin = atob(xlsxFile.b64);
+    ok(bin.charCodeAt(0) === 0x50 && bin.charCodeAt(1) === 0x4b, 'Excel 文件是合法的 ZIP（PK 魔数）');
+    ok(bin.indexOf('[Content_Types].xml') >= 0, 'Excel 内含内容类型定义');
+    ok(bin.indexOf('xl/worksheets/sheet1.xml') >= 0, 'Excel 内含工作表');
+    // ZIP 条目未压缩，把字节按 UTF-8 解码后即可直接看到里面的中文
+    const bytes = new Uint8Array(bin.length);
+    for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
+    const inner = new TextDecoder('utf-8').decode(bytes);
+    ok(inner.indexOf('账目明细') >= 0, 'Excel 内含「账目明细」工作表名');
+    ok(inner.indexOf('分类汇总') >= 0, 'Excel 内含「分类汇总」工作表名');
+    ok(inner.indexOf('校园食堂') >= 0, 'Excel 明细里能看到账目内容');
+    ok(inner.indexOf('周期汇总') >= 0, 'Excel 内含「周期汇总」工作表名');
+  }
+
+  const imgName = await Report.exportImage({ list: exportList, range: exportRange });
+  await wait(900);
+  const imgFile = savedFiles.find((f) => f.name === imgName);
+  ok(!!imgFile, '图片报告导出成功：' + imgName);
+  let pngB64 = '';
+  if (imgFile) {
+    const ib = atob(imgFile.b64);
+    pngB64 = imgFile.b64;
+    ok(ib.charCodeAt(0) === 0x89 && ib.slice(1, 4) === 'PNG', '图片是合法的 PNG 文件');
+    ok(imgFile.b64.length > 20000, '图片内容非空（' + Math.round(imgFile.b64.length / 1024) + ' KB base64）');
+  }
+
+  const canvas = Report.renderCanvas((function () {
+    const d = Report.buildReportData(exportList, exportRange);
+    d._list = exportList;
+    return d;
+  })(), {});
+  ok(canvas.width === 1080, '报告图片宽度 1080');
+  ok(canvas.height > 800, '报告图片高度自适应内容：' + canvas.height);
+
+  delete window.AndroidApp;
+
+  /* ---------- 20. 自动备份 ---------- */
+  const bkInfo = await Backup.run(true);
+  ok(!!bkInfo && bkInfo.txCount === Store.tx.length, '可以手动创建备份快照（' + (bkInfo ? bkInfo.txCount : 0) + ' 条）');
+  const bkList = await Backup.list();
+  ok(bkList.length >= 1, '备份列表里有快照（' + bkList.length + ' 份）');
+
+  const cntBefore = Store.tx.length;
+  await Store.removeTx(Store.tx[0].id);
+  await wait(200);
+  ok(Store.tx.length === cntBefore - 1, '删除一笔后条数减少');
+
+  await Backup.restore(bkInfo.key);
+  await wait(400);
+  ok(Store.tx.length === cntBefore, '还原备份后数据恢复（' + Store.tx.length + ' 条）');
+  ok((await Backup.list()).length >= 1, '还原操作不会把备份快照本身删掉');
+
+  /* ---------- 21. 导出设置面板可打开 ---------- */
+  UI.openExportSheet();
+  await wait(400);
+  ok($('#sheetRoot').textContent.indexOf('导出 Excel') >= 0, '导出面板可以打开');
+  ok($('#sheetRoot').textContent.indexOf('图片报告') >= 0, '导出面板含图片报告选项');
+  UI.closeSheet();
+  await wait(350);
+  UI.openBackupSheet();
+  await wait(500);
+  ok($('#sheetRoot').textContent.indexOf('自动备份') >= 0, '备份面板可以打开');
+  ok($('#sheetRoot').textContent.indexOf('备份记录') >= 0, '备份面板列出备份记录');
+  UI.closeSheet();
+  await wait(350);
+
   UI.go('home');
   await wait(250);
 
   return {
     results: results,
     errors: errors,
+    artifacts: {
+      xlsx: xlsxFile ? { name: xlsxName, b64: xlsxFile.b64 } : null,
+      png: pngB64 ? { name: imgName, b64: pngB64 } : null
+    },
     summary: {
       pass: results.filter((r) => r.ok).length,
       fail: results.filter((r) => !r.ok).length,

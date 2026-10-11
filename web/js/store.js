@@ -14,11 +14,29 @@
     tx: [],
     categories: [],
     settings: {},
+    tombstones: {},          // 删除记录：{ id: 删除时间 }，用于设备之间同步删除操作
+    settingsUpdatedAt: 0,    // 设置的最近修改时间，同步时用于比较新旧
     loaded: false,
     _listeners: [],
     _txMap: new Map(),
     _catMap: new Map()
   };
+
+  /* 需要参与同步的设置项（主题这类每台设备各不相同的设置不参与） */
+  const SYNC_SETTING_KEYS = ['semesters', 'activeSemesterId', 'weekStart', 'rules',
+    'autoClassifyOnImport', 'dedupeOnImport', 'lastAccount'];
+
+  /* 墓碑保留时长：超过这个时间的删除记录可以丢弃（默认 180 天） */
+  const TOMBSTONE_TTL = 180 * 24 * 3600 * 1000;
+
+  let tombTimer = null;
+  function saveTombstonesSoon() {
+    if (tombTimer) clearTimeout(tombTimer);
+    tombTimer = setTimeout(() => {
+      tombTimer = null;
+      DB.put('meta', { key: 'tombstones', value: Store.tombstones }).catch(() => {});
+    }, 400);
+  }
 
   /* ---------------- 事件 ---------------- */
   Store.subscribe = function (fn) { Store._listeners.push(fn); return () => { Store._listeners = Store._listeners.filter((f) => f !== fn); }; };
@@ -65,7 +83,8 @@
       hidden: !!c.hidden,
       excludeByDefault: !!c.excludeByDefault,
       builtin: !!c.builtin,
-      order: typeof c.order === 'number' ? c.order : (i || 0) * 10
+      order: typeof c.order === 'number' ? c.order : (i || 0) * 10,
+      updatedAt: c.updatedAt || Date.now()
     };
   }
 
@@ -73,13 +92,18 @@
   Store.init = async function () {
     const mode = await DB.init();
 
-    const [txRows, catRows, setRow] = await Promise.all([
-      DB.all('tx'), DB.all('categories'), DB.get('meta', 'settings')
+    const [txRows, catRows, setRow, tombRow] = await Promise.all([
+      DB.all('tx'), DB.all('categories'), DB.get('meta', 'settings'), DB.get('meta', 'tombstones')
     ]);
 
     Store.tx = (txRows || []).map(normalizeTx);
     Store.categories = (catRows || []).map(normalizeCategory);
     Store.settings = Object.assign({}, D.settings, setRow ? setRow.value : {});
+    Store.settingsUpdatedAt = (setRow && setRow.settingsUpdatedAt) || 0;
+    Store.tombstones = (tombRow && tombRow.value) || {};
+    // 丢弃过期的删除记录
+    const expire = Date.now() - TOMBSTONE_TTL;
+    Object.keys(Store.tombstones).forEach((k) => { if (Store.tombstones[k] < expire) delete Store.tombstones[k]; });
 
     // 首次使用：自动装一套分类
     if (!Store.categories.length) {
@@ -105,8 +129,11 @@
   };
 
   /* ---------------- 设置 ---------------- */
-  Store.saveSettings = async function () {
-    await DB.put('meta', { key: 'settings', value: Store.settings });
+  Store.saveSettings = async function (opts) {
+    if (!opts || opts.touch !== false) Store.settingsUpdatedAt = Date.now();
+    await DB.put('meta', {
+      key: 'settings', value: Store.settings, settingsUpdatedAt: Store.settingsUpdatedAt
+    });
   };
   Store.updateSettings = async function (patch) {
     Object.assign(Store.settings, patch);
@@ -144,6 +171,7 @@
     const cat = Store.getCategory(id);
     if (!cat) return null;
     Object.assign(cat, patch);
+    cat.updatedAt = Date.now();
     await DB.put('categories', cat);
     // 同步账单上冗余的分类名/图标，保证历史记录显示一致
     const affected = Store.tx.filter((t) => t.categoryId === id);
@@ -161,6 +189,7 @@
     if (!cat) return;
     const used = Store.tx.filter((t) => t.categoryId === id).length;
     Store.categories = Store.categories.filter((c) => c.id !== id);
+    Store.addTombstone(id);
     await DB.remove('categories', id);
     Store.reindex();
     Store.emit('categories');
@@ -257,6 +286,7 @@
   Store.removeTx = async function (id) {
     Store.tx = Store.tx.filter((t) => t.id !== id);
     Store._txMap.delete(id);
+    Store.addTombstone(id);
     await DB.remove('tx', id);
     Store.emit('tx');
   };
@@ -264,6 +294,7 @@
   Store.removeManyTx = async function (ids) {
     const set = new Set(ids);
     Store.tx = Store.tx.filter((t) => !set.has(t.id));
+    ids.forEach((id) => Store.addTombstone(id));
     Store.reindex();
     await DB.removeMany('tx', ids);
     Store.emit('tx');
@@ -483,11 +514,7 @@
     const setIn = obj.settings || null;
 
     if (mode === 'replace') {
-      await DB.clearAll();
-      Store.tx = [];
-      Store.categories = [];
-      Store.settings = Object.assign({}, D.settings);
-      Store.reindex();
+      await Store.clearAllData();
     }
 
     // 分类：按 id 合并，同 id 覆盖
@@ -557,6 +584,129 @@
       names: Store.categories.length,
       size: JSON.stringify(Store.exportObject()).length
     };
+  };
+
+  /* ============================================================
+     设备同步支持
+     规则：同一条数据按 updatedAt 比较，后修改的胜出；
+          删除操作用「墓碑」记录，避免被另一台设备又把数据推回来。
+     ============================================================ */
+
+  Store.addTombstone = function (id) {
+    if (!id) return;
+    Store.tombstones[id] = Date.now();
+    saveTombstonesSoon();
+  };
+
+  /* 打包本地数据，准备发给服务器 / 另一台设备 */
+  Store.syncSnapshot = function (deviceId, deviceName) {
+    const settings = {};
+    SYNC_SETTING_KEYS.forEach((k) => { if (Store.settings[k] !== undefined) settings[k] = Store.settings[k]; });
+    return {
+      deviceId: deviceId || '',
+      deviceName: deviceName || '',
+      tx: Store.tx,
+      categories: Store.categories,
+      settings: settings,
+      settingsUpdatedAt: Store.settingsUpdatedAt,
+      tombstones: Object.keys(Store.tombstones).map((id) => ({ id: id, at: Store.tombstones[id] }))
+    };
+  };
+
+  /* 统计将要发生的变动（在应用之前调用），用于显示同步结果 */
+  Store.diffRemote = function (result) {
+    const remoteTx = new Map();
+    (result.tx || []).forEach((rt) => remoteTx.set(rt.id, rt));
+    let willArrive = 0, willLeave = 0;
+    remoteTx.forEach((rt, id) => {
+      const cur = Store._txMap.get(id);
+      if (!cur || (rt.updatedAt || 0) > (cur.updatedAt || 0)) willArrive++;
+    });
+    (result.tombstones || []).forEach((tb) => {
+      if (tb && Store._txMap.has(tb.id) && (tb.at || 0) > (Store.tombstones[tb.id] || 0)) willLeave++;
+    });
+    return { willArrive: willArrive, willLeave: willLeave, remoteTotal: remoteTx.size };
+  };
+
+  /* 把远端合并结果并回本地 */
+  Store.applyRemote = async function (result) {
+    const stat = { added: 0, updated: 0, removed: 0, catAdded: 0, catUpdated: 0, catRemoved: 0, settings: false };
+
+    /* 1. 删除（墓碑） */
+    const removedIds = new Set();
+    (result.tombstones || []).forEach((tb) => {
+      if (!tb || !tb.id) return;
+      if ((tb.at || 0) > (Store.tombstones[tb.id] || 0)) Store.tombstones[tb.id] = tb.at || 0;
+      removedIds.add(tb.id);
+    });
+    if (removedIds.size) {
+      const beforeTx = Store.tx.length;
+      Store.tx = Store.tx.filter((t) => !removedIds.has(t.id));
+      stat.removed = beforeTx - Store.tx.length;
+      const beforeCat = Store.categories.length;
+      Store.categories = Store.categories.filter((c) => !removedIds.has(c.id));
+      stat.catRemoved = beforeCat - Store.categories.length;
+    }
+
+    /* 2. 账目 */
+    const txMap = new Map(Store.tx.map((t) => [t.id, t]));
+    const dirtyTx = [];
+    (result.tx || []).forEach((rt) => {
+      if (!rt || !rt.id) return;
+      const cur = txMap.get(rt.id);
+      if (!cur) { const v = normalizeTx(rt); txMap.set(v.id, v); dirtyTx.push(v); stat.added++; }
+      else if ((rt.updatedAt || 0) > (cur.updatedAt || 0)) {
+        const v = normalizeTx(rt); txMap.set(v.id, v); dirtyTx.push(v); stat.updated++;
+      }
+    });
+    if (dirtyTx.length) {
+      Store.tx = Array.from(txMap.values());
+      await DB.putMany('tx', dirtyTx);
+    }
+
+    /* 3. 分类 */
+    const catMap = new Map(Store.categories.map((c) => [c.id, c]));
+    const dirtyCat = [];
+    (result.categories || []).forEach((rc) => {
+      if (!rc || !rc.id) return;
+      const cur = catMap.get(rc.id);
+      if (!cur) { const v = normalizeCategory(rc); catMap.set(v.id, v); dirtyCat.push(v); stat.catAdded++; }
+      else if ((rc.updatedAt || 0) > (cur.updatedAt || 0)) {
+        const v = normalizeCategory(rc); catMap.set(v.id, v); dirtyCat.push(v); stat.catUpdated++;
+      }
+    });
+    if (dirtyCat.length) {
+      Store.categories = Array.from(catMap.values());
+      await DB.putMany('categories', dirtyCat);
+    }
+
+    /* 4. 设置 */
+    if (result.settings && (result.settingsUpdatedAt || 0) > (Store.settingsUpdatedAt || 0)) {
+      Object.assign(Store.settings, result.settings);
+      Store.settingsUpdatedAt = result.settingsUpdatedAt || 0;
+      await Store.saveSettings({ touch: false });
+      stat.settings = true;
+    }
+
+    saveTombstonesSoon();
+    Store.reindex();
+    Store.emit('all');
+    return stat;
+  };
+
+  /* 清空业务数据（账单 / 分类 / 设置 / 删除记录）。
+     刻意保留「应用内备份快照」，避免清空之后再也找不回来。 */
+  Store.clearAllData = async function () {
+    await DB.clear('tx');
+    await DB.clear('categories');
+    await DB.remove('meta', 'settings');
+    await DB.remove('meta', 'tombstones');
+    Store.tx = [];
+    Store.categories = [];
+    Store.settings = Object.assign({}, D.settings);
+    Store.tombstones = {};
+    Store.settingsUpdatedAt = 0;
+    Store.reindex();
   };
 
   global.Store = Store;

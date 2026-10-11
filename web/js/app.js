@@ -130,8 +130,12 @@
     wire();
 
     Store.subscribe((reason) => {
-      if (reason === 'tx' || reason === 'all') refreshDebounced();
-      else if (reason === 'categories' || reason === 'settings') refreshDebounced();
+      refreshDebounced();
+      // 'all' 是同步合并后发出的，不再触发同步，避免来回循环
+      if (reason === 'tx' || reason === 'categories' || reason === 'settings') {
+        if (global.Sync) global.Sync.onDataChanged();
+        if (global.Backup) global.Backup.onDataChanged();
+      }
     });
 
     let last = 'home';
@@ -142,6 +146,14 @@
     registerSW();
     persistStorage();
     firstRunTips();
+
+    // 载入同步配置，并在后台自动同步一次
+    if (global.Sync) {
+      global.Sync.load();
+      global.Sync.autoSyncOnStart();
+    }
+    // 启动时检查一次自动备份
+    if (global.Backup) global.Backup.autoOnStart();
 
     if (mode === 'local') {
       UI.toast('提示：当前浏览器使用了降级存储，建议用 Chrome / Edge 打开以启用更稳定的存储', 'err');

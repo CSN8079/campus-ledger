@@ -233,14 +233,21 @@
     const idx = detect.idx;
     const items = [];
     const seenKeys = new Set();
-    // 已有账单的键
+    // 已有的精确键（交易单号 / 完整字段组合）
     const existing = new Set();
+    // 宽松索引：同一天 + 同方向 + 同金额 —— 用来发现"金额日期都对得上"的疑似重复
+    // （常见场景：先手动记了一笔，之后又导入了包含这笔的账单）
+    const looseIndex = new Map();
+    const looseKeyOf = (t) => t.dateKey + '|' + t.type + '|' + (Number(t.amount) || 0).toFixed(2);
     Store.tx.forEach((t) => {
       if (t.externalId) existing.add('ext:' + t.externalId);
       existing.add('fb:' + fallbackKey(t));
+      const k = looseKeyOf(t);
+      if (!looseIndex.has(k)) looseIndex.set(k, []);
+      looseIndex.get(k).push(t);
     });
 
-    let dup = 0, skipped = 0, ignored = 0;
+    let dup = 0, suspect = 0, skipped = 0, ignored = 0;
 
     for (let r = detect.headerIndex + 1; r < rows.length; r++) {
       const row = rows[r];
@@ -309,22 +316,39 @@
         tags: []
       };
 
-      // 去重
+      // 一级判定：严格重复（交易单号相同，或字段完全一致）
       const extKey = tx.externalId ? 'ext:' + tx.externalId : '';
       const fbKey = 'fb:' + fallbackKey(tx);
-      let isDup = false;
+      let isDup = false, dupReason = '';
       if (opts.dedupe) {
-        if (extKey && existing.has(extKey)) isDup = true;
-        else if (!extKey && existing.has(fbKey)) isDup = true;
-        else if (seenKeys.has(extKey || fbKey)) isDup = true;
+        if (extKey && existing.has(extKey)) { isDup = true; dupReason = '交易单号已存在'; }
+        else if (!extKey && existing.has(fbKey)) { isDup = true; dupReason = '同日同额同来源'; }
+        else if (seenKeys.has(extKey || fbKey)) { isDup = true; dupReason = '文件内重复'; }
       }
       seenKeys.add(extKey || fbKey);
       if (isDup) dup++;
 
+      // 二级判定：疑似重复（同一天、同方向、金额完全相同）
+      let isSuspect = false, suspectReason = '';
+      if (!isDup && opts.dedupe) {
+        const hit = looseIndex.get(looseKeyOf(tx));
+        if (hit && hit.length) {
+          isSuspect = true;
+          const same = hit.find((h) => h.counterparty && h.counterparty === tx.counterparty);
+          suspectReason = same
+            ? '同日同额：已有「' + same.counterparty + '」' + U.fmtMoney(same.amount) + '（' + same.dateKey + '）'
+            : '同日同额：已有 ' + hit.length + ' 笔同日同金额记录';
+        }
+      }
+      if (isSuspect) suspect++;
+
       items.push({
         ok: true,
         dup: isDup,
-        selected: !isDup,
+        dupReason: dupReason,
+        suspect: isSuspect,
+        suspectReason: suspectReason,
+        selected: !isDup && !isSuspect,
         kind: detect.kind,
         raw: { time: rawTime, dir: cell('dir'), amount: cell('amount'), status: status, txKind: txKind, counterparty: counterparty, item: item, payMethod: payMethod, orderNo: orderNo },
         tx: tx
@@ -336,7 +360,8 @@
       items: items,
       detect: detect,
       text: text,
-      stats: { total: items.length, dup: dup, skipped: skipped, ignored: ignored, parsed: items.length }
+      looseIndex: looseIndex,
+      stats: { total: items.length, dup: dup, suspect: suspect, skipped: skipped, ignored: ignored, parsed: items.length }
     };
   };
 
