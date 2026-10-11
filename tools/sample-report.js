@@ -96,7 +96,7 @@ const EXPR = `(async () => {
   const list = Store.query({ from: range.from, to: range.to, includeExcluded: true, includeHidden: true });
 
   const xlsxName = Report.exportExcel({ list: list, range: range });
-  const pngName = await Report.exportImage({ list: list, range: range });
+  const pngName = await Report.exportImage({ list: list, range: range, title: '10 月生活费账目' });
   await wait(900);
 
   const x = savedFiles.find((f) => f.name === xlsxName);

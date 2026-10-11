@@ -242,7 +242,8 @@
     return {
       dataRows: dataRows || 0, total: 0, parsed: 0,
       dup: 0, suspect: 0, ignored: 0, skipped: 0,
-      skipReasons: { footer: 0, noTime: 0, noAmount: 0, closed: 0 }
+      skipReasons: { footer: 0, noTime: 0, noAmount: 0, closed: 0 },
+      excludeBreakdown: {}
     };
   }
 
@@ -264,11 +265,19 @@
      保证两种格式的结果完全一致。 */
   I.parseRows = function (rows, opts, meta) {
     opts = Object.assign({
-      includeIgnore: true,    // 默认连「不计收支」的流水一起导入（导入后标记为不计入统计）
-      excludeRefund: true,    // 退款相关流水标记为不计入统计
+      /* 账单里标记「不计收支」的流水怎么处理 —— 由用户决定，应用不替他做主张
+         exclude = 保留在明细里但不计入合计（默认，尊重账单自己的标记）
+         count   = 当作正常收入/支出，全部计入合计
+         skip    = 这些流水完全不导入 */
+      ignoreMode: 'exclude',
+      refundMode: 'exclude',   // 退款流水：exclude = 不计入合计 | count = 计入合计
       autoClassify: true,
       dedupe: true
     }, opts || {});
+
+    /* 兼容旧参数名 */
+    if (opts.includeIgnore === false) opts.ignoreMode = 'skip';
+    if (opts.excludeRefund === false) opts.refundMode = 'count';
     meta = meta || {};
     rows = rows || [];
 
@@ -333,13 +342,13 @@
       else if (dir === 'ignore') type = guessDirectionFromText(counterparty + ' ' + item + ' ' + txKind + ' ' + status);
       else type = /^-/.test(cell('amount')) || amount < 0 ? 'expense' : 'income';
 
-      // 不计收支的流水按配置处理
+      /* 是否排除完全按用户选的模式来，应用不擅自判定 */
       let forceExclude = false, excludeReason = '';
       if (dir === 'ignore') {
-        if (!opts.includeIgnore) { ignored++; continue; }
-        forceExclude = true; excludeReason = '不计收支';
+        if (opts.ignoreMode === 'skip') { ignored++; continue; }
+        if (opts.ignoreMode === 'exclude') { forceExclude = true; excludeReason = '账单标记「不计收支」'; }
       }
-      if (isRefund && opts.excludeRefund) { forceExclude = true; excludeReason = '退款'; }
+      if (isRefund && opts.refundMode === 'exclude') { forceExclude = true; excludeReason = '退款'; }
       if (/交易关闭|已关闭|已撤销|失败|已退款给|支付失败/.test(status)) { skipped++; skipReasons.closed++; continue; }
 
       const time = parseTimeCell(rawTime);
@@ -414,6 +423,15 @@
     }
 
     items.sort((a, b) => b.tx.time - a.tx.time);
+
+    /* 把「不计入合计」的构成统计出来，方便用户核对是不是自己想要的 */
+    const excludeBreakdown = {};
+    items.forEach((it) => {
+      if (!it.tx.excludeStat) return;
+      const r = it.tx.excludeReason || '未注明';
+      excludeBreakdown[r] = (excludeBreakdown[r] || 0) + 1;
+    });
+
     return {
       items: items,
       detect: detect,
@@ -426,7 +444,8 @@
         total: items.length,
         parsed: items.length,
         dup: dup, suspect: suspect, ignored: ignored, skipped: skipped,
-        skipReasons: skipReasons
+        skipReasons: skipReasons,
+        excludeBreakdown: excludeBreakdown
       }
     };
   };

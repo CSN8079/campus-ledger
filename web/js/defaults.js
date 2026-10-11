@@ -114,6 +114,7 @@
     hideExcludedInList: false,  // 明细列表默认隐藏“不计入统计”的账单
     autoClassifyOnImport: true,
     dedupeOnImport: true,
+    reportTitle: '大学生活记账本',   // 导出图片报告时的抬头
     autoBackup: true,          // 自动备份开关
     backupKeep: 10,            // 保留最近几份应用内快照
     backupIntervalHours: 24,   // 隔多久自动备份一次

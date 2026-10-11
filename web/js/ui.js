@@ -350,12 +350,21 @@
 
     /* 过滤开关 */
     const filterRow = U.el('div', { class: 'chips', style: { marginBottom: '12px' } }, [
+      /* 这两个按钮的文字始终写「当前是什么状态」，避免被误解成「点了才会怎样」 */
       U.el('button', {
-        class: 'chip' + (f.hideExcluded ? ' is-active' : ''), text: '隐藏不计入统计',
-        onclick: () => { f.hideExcluded = !f.hideExcluded; Store.updateSettings({ hideExcludedInList: f.hideExcluded }); UI.renderList(); }
+        class: 'chip' + (f.hideExcluded ? '' : ' is-active'),
+        text: '不计入统计：' + (f.hideExcluded ? '不显示' : '显示'),
+        title: '点一下切换：报销、代付等「不计入统计」的账单，是否显示在列表里',
+        onclick: () => {
+          f.hideExcluded = !f.hideExcluded;
+          Store.updateSettings({ hideExcludedInList: f.hideExcluded });
+          UI.renderList();
+        }
       }),
       U.el('button', {
-        class: 'chip' + (f.showHidden ? ' is-active' : ''), text: '显示已隐藏账单',
+        class: 'chip' + (f.showHidden ? ' is-active' : ''),
+        text: '已隐藏账单：' + (f.showHidden ? '显示' : '不显示'),
+        title: '点一下切换：你手动隐藏的账单，是否显示在列表里',
         onclick: () => { f.showHidden = !f.showHidden; UI.renderList(); }
       }),
       U.el('button', {
@@ -614,18 +623,7 @@
         const name = R.exportExcel({ list: list, range: range });
         UI.toast('已导出 ' + name, 'ok');
       } }),
-      U.el('button', { class: 'chip', text: '🖼 生成图片报告', onclick: async (e) => {
-        e.target.disabled = true;
-        e.target.textContent = '生成中…';
-        try {
-          const name = await global.Report.exportImage({ list: list, range: range });
-          UI.toast('已生成 ' + name + '，可以直接发给爸妈看', 'ok');
-        } catch (err) {
-          UI.toast('生成失败：' + err.message, 'err');
-        }
-        e.target.disabled = false;
-        e.target.textContent = '🖼 生成图片报告';
-      } })
+      U.el('button', { class: 'chip', text: '🖼 生成图片报告', onclick: () => UI.openExportSheet() })
     ]));
 
     if (!inc.count) {
@@ -787,7 +785,7 @@
     view.appendChild(U.el('div', { class: 'card' }, [
       U.el('div', { class: 'card-title' }, [U.el('h3', { text: '显示与偏好' })]),
       U.el('div', { class: 'switch-row' }, [
-        U.el('div', { class: 'sr-body' }, [U.el('div', { class: 'sr-title', text: '明细默认隐藏不计入统计的账单' }), U.el('div', { class: 'sr-desc', text: '开启后，明细页默认不显示报销/代付等账单' })]),
+        U.el('div', { class: 'sr-body' }, [U.el('div', { class: 'sr-title', text: '明细默认不显示「不计入统计」的账单' }), U.el('div', { class: 'sr-desc', text: '开启后，报销、代付等账单默认从明细列表里藏起来（在明细页也能随时切换）' })]),
         U.el('button', { class: 'switch' + (Store.settings.hideExcludedInList ? ' is-on' : ''), onclick: async (e) => { await Store.updateSettings({ hideExcludedInList: !Store.settings.hideExcludedInList }); e.target.classList.toggle('is-on'); UI.state.list.hideExcluded = Store.settings.hideExcludedInList; } })
       ]),
       U.el('div', { class: 'switch-row' }, [
@@ -1445,8 +1443,9 @@
     const opts = UI.state.importOpts = UI.state.importOpts || {
       autoClassify: Store.settings.autoClassifyOnImport,
       dedupe: Store.settings.dedupeOnImport,
-      includeIgnore: true,     // 默认连「不计收支」一起导入（导入后标记为不计入统计）
-      excludeRefund: true
+      // 默认只是「尊重账单自己写的标记」，排除与否完全由用户在界面上决定
+      ignoreMode: 'exclude',
+      refundMode: 'exclude'
     };
 
     const drop = U.el('div', { class: 'drop' }, [
@@ -1540,13 +1539,46 @@
         }
       }));
     }
+    /* 三档／两档选择器 */
+    function modeField(key, label, options, desc) {
+      const seg = U.el('div', { class: 'seg', style: { marginBottom: '0' } });
+      options.forEach(function (o) {
+        seg.appendChild(U.el('button', {
+          class: opts[key] === o.v ? 'is-active' : '',
+          text: o.n,
+          onclick: function () {
+            opts[key] = o.v;
+            Array.prototype.forEach.call(seg.children, function (b) {
+              b.classList.toggle('is-active', b.textContent === o.n);
+            });
+          }
+        }));
+      });
+      const box = U.el('div', { class: 'field' }, [U.el('label', { text: label }), seg]);
+      if (desc) box.appendChild(U.el('div', { class: 'sheet-note', style: { margin: '6px 0 0' }, text: desc }));
+      return box;
+    }
+
     U.append(body, [
-      U.el('div', { class: 'section-label', text: '导入选项' }),
+      U.el('div', { class: 'section-label', text: '基础选项' }),
       U.el('div', { class: 'card tight' }, [
         optRow('autoClassify', '自动分类', '根据交易对方与商品说明自动归类'),
-        optRow('dedupe', '自动去重', '交易单号已存在时标记为重复，默认不导入'),
-        optRow('includeIgnore', '导入「不计收支」流水', '余额宝转入转出、花呗还款、提现、转账等。导入后会标记为「不计入统计」，不影响任何合计'),
-        optRow('excludeRefund', '退款流水不计入统计', '避免退款与原始支出重复计算')
+        optRow('dedupe', '自动去重', '交易单号已存在时标记为重复，默认不导入')
+      ]),
+
+      U.el('div', { class: 'section-label', text: '不计入合计的流水（由你决定）' }),
+      U.el('p', { style: { fontSize: '12px', color: 'var(--text-soft)', lineHeight: '1.75', margin: '0 0 8px' },
+        text: '什么该排除由你说了算。想全按账单金额算，选「计入合计」即可 —— 应用不会擅自替你排除任何一条。' }),
+      U.el('div', { class: 'card tight' }, [
+        modeField('ignoreMode', '账单里标记「不计收支」的流水', [
+          { v: 'exclude', n: '不计入合计' },
+          { v: 'count', n: '计入合计' },
+          { v: 'skip', n: '不导入' }
+        ], '余额宝转入转出、花呗还款、提现、转账等通常属于这类。「不计入合计」会保留在明细里，但不参与任何合计。'),
+        modeField('refundMode', '退款流水', [
+          { v: 'exclude', n: '不计入合计' },
+          { v: 'count', n: '计入合计' }
+        ], '退款容易和原始支出被算两遍，所以默认不计入；想按账单原样算就选「计入合计」。')
       ]),
       U.el('div', { class: 'section-label', text: '怎么导出账单？' }),
       U.el('div', { class: 'card tight', style: { fontSize: '12.5px', color: 'var(--text-soft)', lineHeight: '1.9' }, html:
@@ -1598,13 +1630,29 @@
         U.el('div', { html: '已勾选 <b>' + picked + '</b> 条，净额 <b>' + U.esc(U.fmtMoney(sum)) + '</b>' }),
         reasonBits.length ? U.el('div', { style: { fontSize: '11.5px', color: 'var(--text-faint)' }, text: '无法识别的行：' + reasonBits.join('、') }) : null,
 
-        (st.ignored ? U.el('div', { class: 'imp-warn' }, [
-          U.el('div', { html: '有 <b>' + st.ignored + '</b> 条「不计收支」流水被跳过了（余额宝转入转出、花呗还款、提现、转账等）。' }),
-          U.el('div', { style: { marginTop: '6px' }, text: '这些不是漏掉的数据，是当前选项设定为不导入。如果需要，点下面的按钮把它们也导进来，导入后会标记为「不计入统计」，不影响任何合计。' }),
+        (excluded && Object.keys(st.excludeBreakdown || {}).length
+          ? U.el('div', { style: { fontSize: '11.5px', color: 'var(--text-faint)' },
+              text: '其中不计入合计的构成：' + Object.keys(st.excludeBreakdown).map(function (k) {
+                return k + ' ' + st.excludeBreakdown[k] + ' 条';
+              }).join('、') })
+          : null),
+
+        (excluded ? U.el('div', { class: 'imp-warn' }, [
+          U.el('div', { html: '有 <b>' + excluded + '</b> 条被标记为「不计入合计」。排除规则是你自己选的，如果这不是你想要的结果，可以一键改成全部计入。' }),
           U.el('button', {
             class: 'btn btn-sm', style: { marginTop: '8px' },
-            text: '把「不计收支」也一起导入',
-            onclick: () => { if (onReparse) onReparse({ includeIgnore: true }); }
+            text: '全部计入合计',
+            onclick: () => { if (onReparse) onReparse({ ignoreMode: 'count', refundMode: 'count' }); }
+          })
+        ]) : null),
+
+        (st.ignored ? U.el('div', { class: 'imp-warn' }, [
+          U.el('div', { html: '有 <b>' + st.ignored + '</b> 条「不计收支」流水被跳过了（余额宝转入转出、花呗还款、提现、转账等）。' }),
+          U.el('div', { style: { marginTop: '6px' }, text: '这是你在导入选项里选了「不导入」的结果。想保留它们，点下面的按钮重新解析即可。' }),
+          U.el('button', {
+            class: 'btn btn-sm', style: { marginTop: '8px' },
+            text: '保留这些流水（不计入合计）',
+            onclick: () => { if (onReparse) onReparse({ ignoreMode: 'exclude' }); }
           })
         ]) : null),
 
@@ -2027,6 +2075,7 @@
   UI.openExportSheet = function () {
     let period = 'month';
     let custom = null;
+    let title = Store.settings.reportTitle || '大学生活记账本';
 
     const seg = U.el('div', { class: 'seg' });
     const preview = U.el('div', { class: 'dp-preview' });
@@ -2083,6 +2132,17 @@
         text: '先选好时间范围，再选导出成表格还是图片。图片是一页纸的收支报告，直接发微信给爸妈看最合适。' }),
       seg,
       preview,
+      U.el('div', { class: 'section-label', text: '图片报告的抬头' }),
+      U.el('div', { class: 'field' }, [
+        U.el('input', {
+          class: 'input', value: title, maxlength: '24',
+          placeholder: '例如：10 月生活费账目',
+          oninput: (e) => { title = e.target.value; }
+        }),
+        U.el('div', { class: 'sheet-note', style: { margin: '6px 0 0' },
+          text: '显示在图片最上方。可以写「10 月生活费账目」「给爸妈看的账」之类；留空就用「大学生活记账本」。' })
+      ]),
+
       U.el('div', { class: 'section-label', text: '导出格式' }),
       U.el('div', { style: { display: 'flex', gap: '8px', flexWrap: 'wrap' } }, [
         U.el('button', {
@@ -2098,14 +2158,16 @@
           class: 'btn', text: '🖼 生成图片报告',
           onclick: async function (e) {
             e.target.disabled = true;
-            const old = e.target.textContent;
+            const oldLabel = e.target.textContent;
             e.target.textContent = '生成中…';
             try {
-              const name = await Report.exportImage({ list: dataList(), range: range() });
+              const finalTitle = String(title || '').trim() || '大学生活记账本';
+              await Store.updateSettings({ reportTitle: finalTitle });
+              const name = await Report.exportImage({ list: dataList(), range: range(), title: finalTitle });
               UI.toast('已生成 ' + name, 'ok');
             } catch (err) { UI.toast('生成失败：' + err.message, 'err'); }
             e.target.disabled = false;
-            e.target.textContent = old;
+            e.target.textContent = oldLabel;
           }
         })
       ]),

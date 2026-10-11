@@ -166,13 +166,22 @@
     return h;
   }
 
-  Report.buildReportData = function (list, range) {
+  const DEFAULT_TITLE = '大学生活记账本';
+
+  /** 规范化抬头：留空则用默认值 */
+  Report.normalizeTitle = function (t) {
+    const s = String(t === null || t === undefined ? '' : t).replace(/\s+/g, ' ').trim();
+    return s || DEFAULT_TITLE;
+  };
+
+  Report.buildReportData = function (list, range, title) {
     const full = Stats.full(list);
     const included = full.parts.included;
     const expCats = Stats.byCategory(included, 'expense').rows.slice(0, 8);
     const incCats = Stats.byCategory(included, 'income').rows.slice(0, 5);
     const sources = Stats.byCounterparty(included, 'expense', 6);
     return {
+      title: Report.normalizeTitle(title),
       label: range.label,
       summary: full.included,
       excluded: full.excluded,
@@ -214,10 +223,18 @@
     ctx.arc(W - 60, 24, 140, 0, Math.PI * 2);
     ctx.fill();
 
+    /* 抬头用用户自己填的，太长就自动缩小字号，保证一行放得下 */
+    const titleText = report.title || DEFAULT_TITLE;
+    let titleSize = 46;
+    const maxTitleW = W - PAD * 2;
+    ctx.font = 'bold ' + titleSize + 'px ' + FONT;
+    while (titleSize > 22 && ctx.measureText(titleText).width > maxTitleW) {
+      titleSize -= 2;
+      ctx.font = 'bold ' + titleSize + 'px ' + FONT;
+    }
     ctx.fillStyle = '#ffffff';
-    ctx.font = 'bold 46px ' + FONT;
     ctx.textBaseline = 'alphabetic';
-    ctx.fillText('大学生活记账本', PAD, 96);
+    ctx.fillText(titleText, PAD, 96);
 
     ctx.font = '28px ' + FONT;
     ctx.fillStyle = 'rgba(255,255,255,.92)';
@@ -401,10 +418,12 @@
     opts = opts || {};
     const list = opts.list || [];
     const range = opts.range || Stats.range('month');
-    const data = Report.buildReportData(list, range);
+    const data = Report.buildReportData(list, range, opts.title);
     data._list = list;
     const canvas = Report.renderCanvas(data, opts);
-    const name = '收支报告-' + U.toISODate(new Date()) + '.png';
+    // 文件名也带上抬头，方便区分不同用途的报告
+    const safeTitle = data.title.replace(/[^0-9A-Za-z\u4e00-\u9fa5_\- ]/g, '').trim().slice(0, 20) || '收支报告';
+    const name = safeTitle + '-' + U.toISODate(new Date()) + '.png';
 
     if (canvas.toBlob) {
       return new Promise(function (resolve) {

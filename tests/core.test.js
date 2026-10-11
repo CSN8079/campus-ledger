@@ -40,12 +40,12 @@ sandbox.window = sandbox;
 sandbox.self = sandbox;
 vm.createContext(sandbox);
 
-['util', 'defaults', 'db', 'store', 'stats', 'importer'].forEach((name) => {
+['util', 'defaults', 'xlsx', 'db', 'store', 'stats', 'importer', 'report'].forEach((name) => {
   const file = path.join(ROOT, 'web', 'js', name + '.js');
   vm.runInContext(fs.readFileSync(file, 'utf8'), sandbox, { filename: file });
 });
 
-const { U, Store, Stats, Importer, DEFAULTS } = sandbox;
+const { U, Store, Stats, Importer, Report, DEFAULTS } = sandbox;
 
 /* ---------------- 断言工具 ---------------- */
 let pass = 0, fail = 0;
@@ -312,6 +312,50 @@ function catName(tx) { return tx.categoryName || '(未分类)'; }
   eq(U.fmtMoney(gain.tx.amount), '¥0.02', '金额显示为 ¥0.02');
   eq(gain.tx.type === 'income' ? '+' + U.fmtMoney(gain.tx.amount).slice(1) : '', '+0.02',
     '界面上会显示成 +0.02（不再是 -0.02）');
+
+  /* ---------- 14. 排除规则由用户决定 ---------- */
+  section('14. 「不计入合计」由用户自己决定');
+  const modeCsv = [
+    '交易时间,交易分类,交易对方,对方账号,商品说明,收/支,金额,收/付款方式,交易状态,交易订单号,商家订单号,备注',
+    '2026-07-01 12:00:00,餐饮美食,学校餐厅,,午餐,支出,15.00,余额宝,交易成功,M0001,,/',
+    '2026-07-02 09:00:00,投资理财,余额宝,,余额宝-收益发放,不计收支,0.02,余额宝,交易成功,M0002,,/',
+    '2026-07-03 10:00:00,数码电器,杭州深度求索,,API 充值,支出,100.00,余额宝,交易成功,M0003,,/',
+    '2026-07-04 11:00:00,转账红包,余额宝,,余额宝-单次转入,不计收支,500.00,余额,交易成功,M0004,,/'
+  ].join('\n');
+  const mBase = { autoClassify: true, dedupe: true };
+
+  const mA = Importer.parse(modeCsv, Object.assign({ ignoreMode: 'count', refundMode: 'count' }, mBase));
+  eq(mA.items.length, 4, '「计入合计」模式：4 条全部导入');
+  eq(mA.items.filter((it) => it.tx.excludeStat).length, 0, '「计入合计」模式：一条都没有被排除');
+
+  const mB = Importer.parse(modeCsv, Object.assign({ ignoreMode: 'exclude', refundMode: 'exclude' }, mBase));
+  eq(mB.items.length, 4, '「不计入合计」模式：4 条全部导入');
+  eq(mB.items.filter((it) => it.tx.excludeStat).length, 2, '其中只有 2 条余额宝流水被排除');
+  eq(mB.items.find((it) => it.tx.counterparty === '学校餐厅').tx.excludeStat, false,
+    '学校餐厅正常计入（不会被误排除）');
+  eq(mB.items.find((it) => it.tx.counterparty === '杭州深度求索').tx.excludeStat, false,
+    'DeepSeek 的消费正常计入（不会被误排除）');
+  eq(mB.stats.excludeBreakdown['账单标记「不计收支」'], 2, '预览页能列出排除构成：账单标记 2 条');
+
+  const mC = Importer.parse(modeCsv, Object.assign({ ignoreMode: 'skip', refundMode: 'count' }, mBase));
+  eq(mC.items.length, 2, '「不导入」模式：只导入 2 条普通收支');
+  eq(mC.stats.ignored, 2, '另外 2 条「不计收支」被跳过');
+
+  /* ---------- 15. 图片报告的抬头 ---------- */
+  section('15. 图片报告的抬头可以自定义');
+  eq(Report.normalizeTitle(''), '大学生活记账本', '留空时用默认抬头');
+  eq(Report.normalizeTitle('   '), '大学生活记账本', '只有空白也用默认抬头');
+  eq(Report.normalizeTitle('10 月生活费账目'), '10 月生活费账目', '自定义抬头原样保留');
+  eq(Report.normalizeTitle('  给爸妈看的账  '), '给爸妈看的账', '去掉首尾空白');
+  eq(Report.normalizeTitle('第一行\n第二行'), '第一行 第二行', '换行折成空格');
+  eq(Report.normalizeTitle(null), '大学生活记账本', 'null 也用默认抬头');
+
+  const rd1 = Report.buildReportData([], Stats.range('month'), '我的账本');
+  eq(rd1.title, '我的账本', '生成报告数据时带上自定义抬头');
+  const rd2 = Report.buildReportData([], Stats.range('month'));
+  eq(rd2.title, '大学生活记账本', '不传抬头时用默认值');
+  const rd3 = Report.buildReportData([], Stats.range('month'), '  ');
+  eq(rd3.title, '大学生活记账本', '只传空白仍用默认抬头');
 
   /* ---------- 汇总 ---------- */
   console.log('\n' + '='.repeat(52));

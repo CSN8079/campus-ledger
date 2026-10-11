@@ -508,10 +508,13 @@
   eq((await Backup.list()).length, 0, '清除所有：备份快照也为空（原本 ' + bkN + ' 份）');
   ok(Store.settings.autoBackup === true, '清除所有：设置恢复默认');
 
-  /* 恢复现场，避免影响后面的截图 */
+  /* 恢复现场，并把测试用的那一笔删掉，避免污染截图 */
   await Store.importObject(snap2, 'replace');
   await wait(400);
   ok(Store.tx.length === txBefore + 1 && Store.categories.length === catBefore, '测试结束后已还原现场');
+  const leftover = Store.tx.find((x) => x.counterparty === '清理测试');
+  if (leftover) await Store.removeManyTx([leftover.id]);
+  await wait(250);
 
   /* ---------- 28. 安全区不会被重复计算 ---------- */
   const rootEl = document.documentElement;
@@ -581,7 +584,109 @@
 
   if (gainTx) await Store.removeManyTx([gainTx.id]);
   UI.state.list.period = 'month';
+  UI.state.list.showHidden = false;   // 复位，避免影响后面的测试
   await wait(200);
+
+  /* ---------- 31. 导入面板：排除规则由用户选 ---------- */
+  UI.openImportSheet();
+  await wait(650);
+  const impTxt = $('#sheetRoot').textContent;
+  ok(impTxt.indexOf('由你决定') >= 0, '导入面板写明排除规则由用户决定');
+  ok(impTxt.indexOf('不计入合计') >= 0, '有「不计入合计」选项');
+  ok(impTxt.indexOf('计入合计') >= 0, '有「计入合计」选项');
+  ok(impTxt.indexOf('不导入') >= 0, '有「不导入」选项');
+  const modeSegs = $$('#sheetRoot .seg');
+  ok(modeSegs.length >= 2, '有两组单选控件（不计收支 / 退款）：' + modeSegs.length + ' 组');
+
+  let picked = false;
+  if (modeSegs.length) {
+    const btnCount = Array.prototype.slice.call(modeSegs[0].children)
+      .find((b) => b.textContent === '计入合计');
+    ok(!!btnCount, '找到「计入合计」按钮');
+    if (btnCount) {
+      btnCount.click();
+      await wait(180);
+      picked = btnCount.classList.contains('is-active');
+      ok(picked, '点击后「计入合计」被选中');
+      ok(UI.state.importOpts.ignoreMode === 'count', '选项已写入 ignoreMode=count');
+    }
+  }
+  UI.closeSheet();
+  await wait(420);
+
+  /* 选「计入合计」后重新解析：一条都不应被排除 */
+  const segCsv = [
+    '交易时间,交易分类,交易对方,对方账号,商品说明,收/支,金额,收/付款方式,交易状态,交易订单号,商家订单号,备注',
+    '2026-06-01 12:00:00,餐饮美食,学校餐厅,,午餐,支出,15.00,余额宝,交易成功,SG0001,,/',
+    '2026-06-02 09:00:00,投资理财,余额宝,,余额宝-收益发放,不计收支,0.02,余额宝,交易成功,SG0002,,/'
+  ].join('\n');
+  const segRes = Importer.parse(segCsv, { ignoreMode: 'count', refundMode: 'count', autoClassify: true, dedupe: true });
+  eq(segRes.items.length, 2, '「计入合计」模式下 2 条全部导入');
+  eq(segRes.items.filter((it) => it.tx.excludeStat).length, 0, '「计入合计」模式下没有任何一条被排除');
+  eq(segRes.items.find((it) => it.tx.counterparty === '学校餐厅').tx.excludeStat, false, '学校餐厅照常计入');
+
+  UI.state.importOpts.ignoreMode = 'exclude';
+  UI.state.importOpts.refundMode = 'exclude';
+
+  /* ---------- 32. 图片报告抬头可自定义 ---------- */
+  UI.go('stats');
+  await wait(400);
+  UI.openExportSheet();
+  await wait(650);
+  const titleInput = $$('#sheetRoot input.input').find((el) => String(el.maxLength) === '24');
+  ok(!!titleInput, '导出面板里有抬头输入框');
+  if (titleInput) {
+    titleInput.value = '10 月生活费账目';
+    titleInput.dispatchEvent(new Event('input', { bubbles: true }));
+
+    const savedNames = [];
+    window.AndroidApp = { save: function (name) { savedNames.push(name); } };
+    const genBtn = $$('#sheetRoot button').find((b) => b.textContent.indexOf('生成图片报告') >= 0);
+    ok(!!genBtn, '找到「生成图片报告」按钮');
+    if (genBtn) {
+      genBtn.click();
+      await wait(1800);
+      ok(savedNames.length === 1, '图片已生成');
+      ok(savedNames.length === 1 && savedNames[0].indexOf('10 月生活费账目') >= 0,
+        '导出文件名用上了自定义抬头：' + savedNames[0]);
+    }
+    delete window.AndroidApp;
+    eq(Store.settings.reportTitle, '10 月生活费账目', '抬头被记住，下次打开会自动带上');
+  }
+  UI.closeSheet();
+  await wait(420);
+
+  await Store.updateSettings({ reportTitle: '大学生活记账本' });
+
+  /* ---------- 33. 明细筛选按钮的文案 ---------- */
+  UI.go('list');
+  await wait(450);
+  let chips = $$('#view-list .chip');
+  const chipExcluded = chips.find((c) => c.textContent.indexOf('不计入统计：') >= 0);
+  const chipHidden = chips.find((c) => c.textContent.indexOf('已隐藏账单：') >= 0);
+  ok(!!chipExcluded, '有不计入统计的切换按钮，文案写明当前状态：' + (chipExcluded ? chipExcluded.textContent : '-'));
+  ok(!!chipHidden, '有已隐藏账单的切换按钮：' + (chipHidden ? chipHidden.textContent : '-'));
+  ok(!!chipExcluded && chipExcluded.textContent.indexOf('不计入统计：显示') === 0,
+    '默认是「显示」不计入统计的账单，按钮如实写出「显示」');
+  ok(!!chipHidden && chipHidden.textContent.indexOf('已隐藏账单：不显示') === 0,
+    '默认「不显示」已隐藏账单，按钮如实写出「不显示」');
+  ok(!chips.some((c) => c.textContent === '隐藏不计入统计'), '不再有容易被误解的「隐藏不计入统计」文案');
+  ok(!chips.some((c) => c.textContent === '显示已隐藏账单'), '不再有容易被误解的「显示已隐藏账单」文案');
+
+  if (chipExcluded) {
+    chipExcluded.click();
+    await wait(400);
+    chips = $$('#view-list .chip');
+    const after = chips.find((c) => c.textContent.indexOf('不计入统计：') >= 0);
+    ok(!!after && after.textContent.indexOf('不显示') >= 0,
+      '点一下后文案跟着变成「不显示」：' + (after ? after.textContent : '-'));
+    after.click();
+    await wait(400);
+    chips = $$('#view-list .chip');
+    const back = chips.find((c) => c.textContent.indexOf('不计入统计：') >= 0);
+    ok(!!back && back.textContent.indexOf('显示') >= 0 && back.textContent.indexOf('不显示') < 0,
+      '再点一下恢复成「显示」：' + (back ? back.textContent : '-'));
+  }
 
   UI.go('home');
   await wait(250);

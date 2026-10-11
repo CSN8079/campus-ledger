@@ -204,6 +204,17 @@ async function main() {
       fs.writeFileSync(file, Buffer.from(shot.data, 'base64'));
       console.log('截图已保存：' + path.relative(ROOT, file));
     }
+    // 导入选项面板截图
+    await client.send('Runtime.evaluate', {
+      expression: 'UI.go("home"); setTimeout(function(){ UI.openImportSheet(); setTimeout(function(){ var s=document.querySelector("#sheetRoot .sheet"); if(s) s.scrollTop = 430; }, 500); }, 200);'
+    });
+    await sleep(1800);
+    const shotImp = await client.send('Page.captureScreenshot', { format: 'png' });
+    fs.writeFileSync(path.join(SHOT_DIR, 'import-options.png'), Buffer.from(shotImp.data, 'base64'));
+    console.log('截图已保存：' + path.relative(ROOT, path.join(SHOT_DIR, 'import-options.png')));
+    await client.send('Runtime.evaluate', { expression: 'UI.closeSheet();' });
+    await sleep(400);
+
     // 清理数据面板截图
     await client.send('Runtime.evaluate', { expression: 'UI.go("settings"); setTimeout(function(){ UI.openClearDataSheet(); }, 200);' });
     await sleep(1200);
