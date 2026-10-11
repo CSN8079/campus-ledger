@@ -266,11 +266,11 @@
   I.parseRows = function (rows, opts, meta) {
     opts = Object.assign({
       /* 账单里标记「不计收支」的流水怎么处理 —— 由用户决定，应用不替他做主张
-         exclude = 保留在明细里但不计入合计（默认，尊重账单自己的标记）
-         count   = 当作正常收入/支出，全部计入合计
+         count   = 当作正常收入/支出，全部计入合计（默认：什么都不排除）
+         exclude = 保留在明细里但不计入合计
          skip    = 这些流水完全不导入 */
-      ignoreMode: 'exclude',
-      refundMode: 'exclude',   // 退款流水：exclude = 不计入合计 | count = 计入合计
+      ignoreMode: 'count',
+      refundMode: 'count',   // 退款流水：count = 计入合计（默认）| exclude = 不计入合计
       autoClassify: true,
       dedupe: true
     }, opts || {});

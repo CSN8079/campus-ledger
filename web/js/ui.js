@@ -1443,9 +1443,9 @@
     const opts = UI.state.importOpts = UI.state.importOpts || {
       autoClassify: Store.settings.autoClassifyOnImport,
       dedupe: Store.settings.dedupeOnImport,
-      // 默认只是「尊重账单自己写的标记」，排除与否完全由用户在界面上决定
-      ignoreMode: 'exclude',
-      refundMode: 'exclude'
+      // 默认什么都不排除：导入的每一条都计入合计，要排除哪条由用户自己决定
+      ignoreMode: 'count',
+      refundMode: 'count'
     };
 
     const drop = U.el('div', { class: 'drop' }, [
@@ -1568,17 +1568,17 @@
 
       U.el('div', { class: 'section-label', text: '不计入合计的流水（由你决定）' }),
       U.el('p', { style: { fontSize: '12px', color: 'var(--text-soft)', lineHeight: '1.75', margin: '0 0 8px' },
-        text: '什么该排除由你说了算。想全按账单金额算，选「计入合计」即可 —— 应用不会擅自替你排除任何一条。' }),
+        text: '默认什么都不排除，导入的每一条都计入合计。想少算某些流水时再自己选，应用不会擅自替你决定。' }),
       U.el('div', { class: 'card tight' }, [
         modeField('ignoreMode', '账单里标记「不计收支」的流水', [
           { v: 'exclude', n: '不计入合计' },
           { v: 'count', n: '计入合计' },
           { v: 'skip', n: '不导入' }
-        ], '余额宝转入转出、花呗还款、提现、转账等通常属于这类。「不计入合计」会保留在明细里，但不参与任何合计。'),
+        ], '默认「计入合计」，一条都不会被排除。想少算这些（余额宝转入转出、花呗还款、提现等）就选「不计入合计」，它们会留在明细里但不参与合计。'),
         modeField('refundMode', '退款流水', [
           { v: 'exclude', n: '不计入合计' },
           { v: 'count', n: '计入合计' }
-        ], '退款容易和原始支出被算两遍，所以默认不计入；想按账单原样算就选「计入合计」。')
+        ], '默认「计入合计」：退款和原始支出会各自入账，净额正好抵消。想彻底排除退款再选「不计入合计」。')
       ]),
       U.el('div', { class: 'section-label', text: '怎么导出账单？' }),
       U.el('div', { class: 'card tight', style: { fontSize: '12.5px', color: 'var(--text-soft)', lineHeight: '1.9' }, html:
@@ -1683,14 +1683,36 @@
       return sel;
     }
 
+    /* 状态列：重复 / 疑似重复只做标记；其余每一行都能直接点着切换「计入 / 不计入」，
+       这样哪一条不计入统计，完全由你逐条决定 */
     function renderRowStatus(it) {
       const cell = it._statusCell;
       if (!cell) return;
       U.clear(cell);
-      if (it.dup) cell.appendChild(U.el('span', { class: 'badge warn', title: it.dupReason || '', text: '重复' }));
-      else if (it.suspect) cell.appendChild(U.el('span', { class: 'badge warn', title: it.suspectReason || '', text: '疑似重复' }));
-      else if (it.tx.excludeStat) cell.appendChild(U.el('span', { class: 'badge mute', text: '不计入' }));
-      else cell.appendChild(U.el('span', { class: 'badge primary', text: '新增' }));
+
+      if (it.dup) {
+        cell.appendChild(U.el('span', { class: 'badge warn', title: it.dupReason || '', text: '重复' }));
+        return;
+      }
+      if (it.suspect) {
+        cell.appendChild(U.el('span', { class: 'badge warn', title: it.suspectReason || '', text: '疑似重复' }));
+        return;
+      }
+
+      cell.appendChild(U.el('button', {
+        class: 'badge ' + (it.tx.excludeStat ? 'mute' : 'primary'),
+        style: { border: '0', cursor: 'pointer', fontFamily: 'inherit' },
+        title: it.tx.excludeStat
+          ? '当前不计入合计（' + (it.tx.excludeReason || '未注明') + '），点一下改成计入'
+          : '当前计入合计，点一下改成不计入',
+        text: it.tx.excludeStat ? '不计入' : '计入',
+        onclick: () => {
+          it.tx.excludeStat = !it.tx.excludeStat;
+          it.tx.excludeReason = it.tx.excludeStat ? (it.tx.excludeReason || '手动标记') : '';
+          renderRowStatus(it);
+          refreshStat();
+        }
+      }));
     }
 
     /* 行样式：重复=红底、疑似重复=黄底、未勾选=淡化 */

@@ -119,7 +119,7 @@
     '2026-10-03 09:00:00,转账,妈妈,生活费,收入,\u00a51000.00,零钱,已存入零钱,TEST0002,/,/',
     '2026-10-04 08:00:00,商户消费,上海地铁,地铁票款,支出,\u00a54.00,零钱,支付成功,TEST0003,M0003,/'
   ].join('\n');
-  const parsed = Importer.parse(csv, { autoClassify: true, dedupe: true, includeIgnore: false, excludeRefund: true });
+  const parsed = Importer.parse(csv, { autoClassify: true, dedupe: true, ignoreMode: 'skip', refundMode: 'count' });
   ok(parsed.items.length === 3, '导入引擎解析出 3 条');
   ok(parsed.detect.kind === 'wechat', '导入引擎识别为微信支付账单');
   ok(parsed.items.find((i) => i.tx.counterparty === '美团').tx.categoryName === '餐饮', '自动分类：美团 → 餐饮');
@@ -378,7 +378,7 @@
   ok(book.sheets.length >= 1, 'xlsx 读取成功，共 ' + book.sheets.length + ' 个工作表');
   ok(book.sheets[0].rows.length >= 6, '读到 ' + book.sheets[0].rows.length + ' 行数据');
 
-  const xp = await Importer.parseXlsx(xlsxBytes.buffer, { autoClassify: true, dedupe: true, includeIgnore: true, excludeRefund: true });
+  const xp = await Importer.parseXlsx(xlsxBytes.buffer, { autoClassify: true, dedupe: true, ignoreMode: 'exclude', refundMode: 'exclude' });
   ok(xp.source === 'xlsx', '识别为 Excel 来源');
   eq(xp.items.length, 4, '从 xlsx 里解析出 4 条流水');
   const findParty = (n) => xp.items.find((it) => it.tx.counterparty === n);
@@ -566,7 +566,7 @@
     '交易时间,交易分类,交易对方,对方账号,商品说明,收/支,金额,收/付款方式,交易状态,交易订单号,商家订单号,备注',
     '2026-08-01 00:00:00,投资理财,余额宝,,余额宝-收益发放,不计收支,0.02,余额宝,交易成功,GAIN0001,,/'
   ].join('\n');
-  const gainRes = Importer.parse(gainCsvFixture, { includeIgnore: true, excludeRefund: true, autoClassify: true, dedupe: true });
+  const gainRes = Importer.parse(gainCsvFixture, { ignoreMode: 'exclude', refundMode: 'exclude', autoClassify: true, dedupe: true });
   eq(gainRes.items.length, 1, '解析出 1 条收益流水');
   eq(gainRes.items[0].tx.type, 'income', '收益流水判定为收入方向');
   eq(gainRes.items[0].tx.excludeStat, true, '收益流水依然不计入统计');
@@ -598,17 +598,25 @@
   const modeSegs = $$('#sheetRoot .seg');
   ok(modeSegs.length >= 2, '有两组单选控件（不计收支 / 退款）：' + modeSegs.length + ' 组');
 
-  let picked = false;
   if (modeSegs.length) {
-    const btnCount = Array.prototype.slice.call(modeSegs[0].children)
-      .find((b) => b.textContent === '计入合计');
-    ok(!!btnCount, '找到「计入合计」按钮');
-    if (btnCount) {
-      btnCount.click();
+    const kids = Array.prototype.slice.call(modeSegs[0].children);
+    const active = kids.find((b) => b.classList.contains('is-active'));
+    ok(!!active && active.textContent === '计入合计',
+      '默认就选中「计入合计」（什么都不排除）：' + (active ? active.textContent : '-'));
+    eq(UI.state.importOpts.ignoreMode, 'count', '导入面板默认 ignoreMode=count');
+    eq(UI.state.importOpts.refundMode, 'count', '导入面板默认 refundMode=count');
+
+    const btnEx = kids.find((b) => b.textContent === '不计入合计');
+    ok(!!btnEx, '找到「不计入合计」按钮');
+    if (btnEx) {
+      btnEx.click();
       await wait(180);
-      picked = btnCount.classList.contains('is-active');
-      ok(picked, '点击后「计入合计」被选中');
-      ok(UI.state.importOpts.ignoreMode === 'count', '选项已写入 ignoreMode=count');
+      ok(btnEx.classList.contains('is-active'), '可以切到「不计入合计」');
+      eq(UI.state.importOpts.ignoreMode, 'exclude', '切换后写入 ignoreMode=exclude');
+      const btnBack = Array.prototype.slice.call(modeSegs[0].children)
+        .find((b) => b.textContent === '计入合计');
+      if (btnBack) { btnBack.click(); await wait(150); }
+      eq(UI.state.importOpts.ignoreMode, 'count', '再切回「计入合计」');
     }
   }
   UI.closeSheet();
@@ -625,8 +633,8 @@
   eq(segRes.items.filter((it) => it.tx.excludeStat).length, 0, '「计入合计」模式下没有任何一条被排除');
   eq(segRes.items.find((it) => it.tx.counterparty === '学校餐厅').tx.excludeStat, false, '学校餐厅照常计入');
 
-  UI.state.importOpts.ignoreMode = 'exclude';
-  UI.state.importOpts.refundMode = 'exclude';
+  UI.state.importOpts.ignoreMode = 'count';
+  UI.state.importOpts.refundMode = 'count';
 
   /* ---------- 32. 图片报告抬头可自定义 ---------- */
   UI.go('stats');

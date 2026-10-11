@@ -85,7 +85,7 @@ function catName(tx) { return tx.categoryName || '(未分类)'; }
 
   /* ---------- 3. 微信账单解析 ---------- */
   section('3. 微信支付账单解析');
-  const opts = { autoClassify: true, dedupe: true, includeIgnore: false, excludeRefund: true };
+  const opts = { autoClassify: true, dedupe: true, ignoreMode: 'skip', refundMode: 'exclude' };
   const wRes = Importer.parse(wDec.text, opts);
   eq(wRes.detect.kind, 'wechat', '识别为微信支付账单');
   eq(wRes.items.length, 6, '解析出 6 条有效流水（另有 1 条「不计收支」被忽略）');
@@ -248,8 +248,8 @@ function catName(tx) { return tx.categoryName || '(未分类)'; }
   lines.push('共 137 笔记录');
   const bigText = lines.join('\n');
 
-  const base = { excludeRefund: true, autoClassify: true, dedupe: true };
-  const r1 = Importer.parse(bigText, Object.assign({ includeIgnore: false }, base));
+  const base = { refundMode: 'exclude', autoClassify: true, dedupe: true };
+  const r1 = Importer.parse(bigText, Object.assign({ ignoreMode: 'skip' }, base));
   const s1 = r1.stats;
   console.log('    文件 ' + s1.dataRows + ' 行 = 导入 ' + r1.items.length + ' + 忽略 ' + s1.ignored + ' + 跳过 ' + s1.skipped);
   eq(s1.dataRows, 139, '文件里共 139 行数据（137 笔流水 + 结尾 2 行说明）');
@@ -262,7 +262,7 @@ function catName(tx) { return tx.categoryName || '(未分类)'; }
   eq(s1.skipReasons.footer, 2, '跳过原因里「结尾说明行」2 条');
   eq(s1.dup + s1.suspect, 0, '这批数据里没有重复');
 
-  const r2 = Importer.parse(bigText, Object.assign({ includeIgnore: true }, base));
+  const r2 = Importer.parse(bigText, Object.assign({ ignoreMode: 'exclude' }, base));
   const s2 = r2.stats;
   eq(r2.items.length, 130, '打开选项后导入 130 条');
   eq(s2.ignored, 0, '不再有被忽略的行');
@@ -278,7 +278,7 @@ function catName(tx) { return tx.categoryName || '(未分类)'; }
     '交易时间,交易类型,交易对方,商品,收/支,金额(元),支付方式,当前状态,交易单号,商户单号,备注',
     serial(2026, 9, 2) + ',商户消费,校园食堂,午餐,支出,¥15.00,零钱,支付成功,XS0001,M01,/'
   ].join('\n');
-  const rSerial = Importer.parse(xlsxLike, { includeIgnore: true, excludeFilter: true });
+  const rSerial = Importer.parse(xlsxLike, {});
   eq(rSerial.items.length, 1, '解析出 1 条');
   eq(U.toISODate(new Date(rSerial.items[0].tx.time)), '2026-09-02', '日期序列号被正确还原成 2026-09-02');
   near(rSerial.items[0].tx.amount, 15, '金额正确');
@@ -294,7 +294,7 @@ function catName(tx) { return tx.categoryName || '(未分类)'; }
     '2026-09-05 00:00:00,转账,银行卡,,转账-转账到银行卡,不计收支,300.00,余额宝,交易成功,AT0005,,/',
     '2026-09-06 00:00:00,其他,零钱通,,零钱提现,不计收支,100.00,零钱,提现成功,AT0006,,/'
   ].join('\n');
-  const hintRes = Importer.parse(hintCsv, { includeIgnore: true, excludeRefund: true, autoClassify: true, dedupe: true });
+  const hintRes = Importer.parse(hintCsv, { ignoreMode: 'exclude', refundMode: 'exclude', autoClassify: true, dedupe: true });
   eq(hintRes.items.length, 6, '解析出 6 条「不计收支」流水');
   const typeOf = (kw) => {
     const it = hintRes.items.find((x) => (x.tx.item + ' ' + x.tx.counterparty).indexOf(kw) >= 0);
@@ -340,6 +340,10 @@ function catName(tx) { return tx.categoryName || '(未分类)'; }
   const mC = Importer.parse(modeCsv, Object.assign({ ignoreMode: 'skip', refundMode: 'count' }, mBase));
   eq(mC.items.length, 2, '「不导入」模式：只导入 2 条普通收支');
   eq(mC.stats.ignored, 2, '另外 2 条「不计收支」被跳过');
+
+  const mD = Importer.parse(modeCsv, mBase);
+  eq(mD.items.length, 4, '不传任何排除选项时：4 条全部导入');
+  eq(mD.items.filter((it) => it.tx.excludeStat).length, 0, '默认（什么都不传）：一条都不排除');
 
   /* ---------- 15. 图片报告的抬头 ---------- */
   section('15. 图片报告的抬头可以自定义');

@@ -204,6 +204,27 @@ async function main() {
       fs.writeFileSync(file, Buffer.from(shot.data, 'base64'));
       console.log('截图已保存：' + path.relative(ROOT, file));
     }
+    // 导入预览截图（展示每行可切换「计入 / 不计入」）
+    await client.send('Runtime.evaluate', {
+      expression: '(function(){'
+        + 'var csv=["交易时间,交易类型,交易对方,商品,收/支,金额(元),支付方式,当前状态,交易单号,商户单号,备注",'
+        + '"2026-10-08 12:30:00,商户消费,校园食堂,午餐,支出,¥15.00,零钱,支付成功,PV0001,M001,/",'
+        + '"2026-10-08 19:00:00,转账,爸爸,生活费,收入,¥2000.00,零钱,已存入零钱,PV0002,/,/",'
+        + '"2026-10-09 07:00:00,零钱提现,零钱提现,提现到银行卡,不计收支,¥500.00,零钱,提现成功,PV0003,/,/",'
+        + '"2026-10-09 20:00:00,商户消费,美团,外卖,支出,¥32.50,零钱通,支付成功,PV0004,M002,/"].join("\\n");'
+        + 'UI.state.importSource={kind:"csv",text:csv,name:"示例账单.csv",encoding:"UTF-8"};'
+        + 'UI.openImportSheet();'
+        + 'setTimeout(function(){var b=document.querySelectorAll("#sheetRoot button");'
+        + 'for(var i=0;i<b.length;i++){if(b[i].textContent.indexOf("重新解析")>=0){b[i].click();break;}}},700);'
+        + '})()'
+    });
+    await sleep(1800);
+    const shotPrev = await client.send('Page.captureScreenshot', { format: 'png' });
+    fs.writeFileSync(path.join(SHOT_DIR, 'import-preview.png'), Buffer.from(shotPrev.data, 'base64'));
+    console.log('截图已保存：' + path.relative(ROOT, path.join(SHOT_DIR, 'import-preview.png')));
+    await client.send('Runtime.evaluate', { expression: 'UI.closeSheet(); UI.state.importSource=null;' });
+    await sleep(400);
+
     // 导入选项面板截图
     await client.send('Runtime.evaluate', {
       expression: 'UI.go("home"); setTimeout(function(){ UI.openImportSheet(); setTimeout(function(){ var s=document.querySelector("#sheetRoot .sheet"); if(s) s.scrollTop = 430; }, 500); }, 200);'
