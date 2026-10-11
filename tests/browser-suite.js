@@ -347,6 +347,27 @@
   UI.closeSheet();
   await wait(350);
 
+  /* ---------- 22. 安卓 App 默认完全独立，不依赖电脑 ---------- */
+  window.AndroidApp = { save: function () { /* 仅用于识别环境 */ } };
+  ok(Sync.isApp() === true, '能识别出处于安卓 App 环境');
+  const savedUrl = Sync.config.url;
+  Sync.config.url = '';
+  ok(Sync.available() === false, '没填电脑地址时同步功能关闭');
+  ok(Sync.statusText() === '未配置', '同步状态显示为「未配置」');
+  ok(Sync.isApp() && !Sync.available(), 'App 不依赖电脑也能正常使用');
+
+  const beforeCount = Store.tx.length;
+  const offlineTx = await Store.addTx({ type: 'expense', amount: 1.23, time: Date.now(), categoryName: '其他', counterparty: '离线测试' });
+  ok(Store.tx.length === beforeCount + 1, '断网状态下依然可以正常记账');
+  const backRange = Stats.range('all');
+  ok(Store.query({ from: backRange.from, to: backRange.to }).some((x) => x.id === offlineTx.id),
+    '新记的账目立刻出现在明细查询里');
+  await Store.removeTx(offlineTx.id);
+  ok(Store.tx.length === beforeCount, '删除也完全在本地完成');
+
+  Sync.config.url = savedUrl;
+  delete window.AndroidApp;
+
   UI.go('home');
   await wait(250);
 

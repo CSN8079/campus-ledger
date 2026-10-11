@@ -32,17 +32,17 @@ import java.util.Map;
 /**
  * 大学生活记账本 —— 安卓外壳
  *
- * 设计要点：
- *  1. 页面资源全部打包在 APK 的 assets/www 里，通过一个假的 https 域名
- *     (https://app.local) 提供，使 WebView 认为它是安全来源，
- *     这样 IndexedDB、localStorage 等本地存储才能正常工作（file:// 不行）。
- *  2. 所有请求都在 shouldInterceptRequest 里拦截并从 assets 读取，
- *     任何外部网址都会被拒绝，因此应用不需要也不会使用网络。
- *  3. 不依赖任何第三方库（没有 androidx / Capacitor），只用系统自带 API。
+ * 这是一个**完全独立**的应用：
+ *   - 所有页面资源都打包在 APK 里，通过内部域名 https://app.local 提供
+ *     （必须用 https，否则安卓 WebView 下 IndexedDB / localStorage 不可用）
+ *   - 所有数据都存在手机本地，不联网也能完整使用
+ *   - 只有在用户主动去「设置 → 与电脑同步」里填了电脑地址之后，
+ *     才会访问局域网里的电脑；公网地址一律被拦截
+ *
+ * 请求的路由规则见 RequestRouting（纯逻辑，有单元测试）。
  */
 public class MainActivity extends Activity {
 
-    private static final String HOST = "app.local";
     private static final int REQ_FILE = 1001;
 
     private WebView web;
@@ -67,8 +67,8 @@ public class MainActivity extends Activity {
         s.setMediaPlaybackRequiresUserGesture(true);
         s.setCacheMode(WebSettings.LOAD_DEFAULT);
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.LOLLIPOP) {
-            // 页面本身走 https://app.local，但要能和电脑上的 http 服务通信（同步数据），
-            // 因此必须允许混合内容。外部公网地址在请求拦截里仍会被拒绝。
+            // 页面走 https://app.local，但要能和电脑上的 http 服务通信（同步数据），
+            // 因此允许混合内容；公网地址在请求路由里仍会被拒绝。
             s.setMixedContentMode(WebSettings.MIXED_CONTENT_ALWAYS_ALLOW);
         }
 
@@ -83,32 +83,25 @@ public class MainActivity extends Activity {
             @Override
             public WebResourceResponse shouldInterceptRequest(WebView view, WebResourceRequest req) {
                 Uri u = req.getUrl();
-                if (u == null) return blocked();
+                int route = RequestRouting.routeFor(u == null ? null : u.getHost());
 
-                // 局域网地址：放行给系统正常请求，用于和电脑上的服务同步数据
-                if (isPrivateHost(u.getHost())) return null;
+                if (route == RequestRouting.ROUTE_BLOCK) return blocked();
+                if (route == RequestRouting.ROUTE_PASSTHROUGH) return null;   // 局域网：交给系统
 
-                // 应用自身的域名：从安装包里读取页面资源
-                if (!HOST.equals(u.getHost())) return blocked();
+                // 走到这里说明是应用自己的页面资源，从安装包里读
                 String path = u.getPath();
-                if (path == null || path.length() == 0 || "/".equals(path)) {
-                    path = "/index.html";
-                }
-                // 防止路径穿越
-                if (path.contains("..")) {
-                    return new WebResourceResponse("text/plain", "utf-8", 400, "Bad Request",
-                            new HashMap<String, String>(),
-                            new ByteArrayInputStream("bad path".getBytes()));
-                }
+                if (path == null || path.length() == 0 || "/".equals(path)) path = "/index.html";
+                if (path.contains("..")) return textResponse(404, "Not Found", "bad path");
+
                 String asset = "www" + path;
                 try {
                     InputStream in = getAssets().open(asset);
                     Map<String, String> headers = new HashMap<String, String>();
                     headers.put("Cache-Control", "no-cache");
-                    return new WebResourceResponse(mimeOf(asset), null, 200, "OK", headers, in);
+                    return new WebResourceResponse(RequestRouting.mimeOf(asset), null, 200, "OK", headers, in);
                 } catch (IOException e) {
                     if (path.indexOf('.') < 0) {
-                        // 无扩展名的路径按单页应用处理
+                        // 没有扩展名的路径按单页应用处理
                         try {
                             InputStream in2 = getAssets().open("www/index.html");
                             return new WebResourceResponse("text/html", "utf-8", 200, "OK",
@@ -117,16 +110,14 @@ public class MainActivity extends Activity {
                             // 落到下面的 404
                         }
                     }
-                    return new WebResourceResponse("text/plain", "utf-8", 404, "Not Found",
-                            new HashMap<String, String>(),
-                            new ByteArrayInputStream("not found".getBytes()));
+                    return textResponse(404, "Not Found", "not found");
                 }
             }
 
             @Override
             public boolean shouldOverrideUrlLoading(WebView view, WebResourceRequest req) {
                 Uri u = req.getUrl();
-                if (u != null && HOST.equals(u.getHost())) return false;
+                if (u != null && RequestRouting.HOST.equals(u.getHost())) return false;
                 try {
                     startActivity(new Intent(Intent.ACTION_VIEW, u));
                 } catch (Exception ignore) {
@@ -158,7 +149,7 @@ public class MainActivity extends Activity {
         });
 
         if (state == null) {
-            web.loadUrl("https://" + HOST + "/index.html");
+            web.loadUrl("https://" + RequestRouting.HOST + "/index.html");
         } else {
             web.restoreState(state);
         }
@@ -194,12 +185,15 @@ public class MainActivity extends Activity {
         super.onActivityResult(requestCode, resultCode, data);
     }
 
-    /** 返回键：先关弹层，再回退页面，最后才退出应用 */
+    /** 返回键：先关弹层（含日期选择浮层），再回退页面，最后才退出应用 */
     @Override
     @SuppressWarnings("deprecation")
     public void onBackPressed() {
         web.evaluateJavascript(
-                "(function(){try{if(window.UI&&window.UI.closePickerLayer&&document.querySelector('#pickerRoot.is-open')){UI.closePickerLayer();return 'sheet';}if(window.UI&&document.querySelector('#sheetRoot.is-open')){UI.closeSheet();return 'sheet';}}catch(e){}return 'none';})()",
+                "(function(){try{"
+                        + "if(window.UI&&window.UI.closePickerLayer&&document.querySelector('#pickerRoot.is-open')){UI.closePickerLayer();return 'sheet';}"
+                        + "if(window.UI&&document.querySelector('#sheetRoot.is-open')){UI.closeSheet();return 'sheet';}"
+                        + "}catch(e){}return 'none';})()",
                 new ValueCallback<String>() {
                     @Override
                     public void onReceiveValue(String value) {
@@ -222,7 +216,7 @@ public class MainActivity extends Activity {
                 if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
                     ContentValues cv = new ContentValues();
                     cv.put(MediaStore.Downloads.DISPLAY_NAME, safe);
-                    cv.put(MediaStore.Downloads.MIME_TYPE, mimeOf(safe));
+                    cv.put(MediaStore.Downloads.MIME_TYPE, RequestRouting.mimeOf(safe));
                     cv.put(MediaStore.Downloads.IS_PENDING, 1);
                     Uri uri = getContentResolver()
                             .insert(MediaStore.Downloads.EXTERNAL_CONTENT_URI, cv);
@@ -263,46 +257,11 @@ public class MainActivity extends Activity {
 
     /* 拒绝访问的响应 */
     private static WebResourceResponse blocked() {
-        return new WebResourceResponse("text/plain", "utf-8", 403, "Forbidden",
-                new HashMap<String, String>(),
-                new ByteArrayInputStream("blocked".getBytes()));
+        return textResponse(403, "Forbidden", "blocked");
     }
 
-    /* 判断是不是局域网 / 本机地址（只有这些地址才允许真正联网） */
-    private static boolean isPrivateHost(String host) {
-        if (host == null || host.length() == 0) return false;
-        if ("localhost".equals(host) || "127.0.0.1".equals(host) || "::1".equals(host)) return true;
-        if (host.endsWith(".local")) return true;
-        String[] p = host.split("\\.");
-        if (p.length == 4) {
-            try {
-                int a = Integer.parseInt(p[0]);
-                int b = Integer.parseInt(p[1]);
-                Integer.parseInt(p[2]);
-                Integer.parseInt(p[3]);
-                if (a == 10) return true;
-                if (a == 192 && b == 168) return true;
-                if (a == 172 && b >= 16 && b <= 31) return true;
-            } catch (NumberFormatException ignore) {
-                return false;
-            }
-        }
-        return false;
-    }
-
-    private static String mimeOf(String name) {
-        String n = name.toLowerCase();
-        if (n.endsWith(".html")) return "text/html";
-        if (n.endsWith(".js")) return "text/javascript";
-        if (n.endsWith(".css")) return "text/css";
-        if (n.endsWith(".json")) return "application/json";
-        if (n.endsWith(".webmanifest")) return "application/manifest+json";
-        if (n.endsWith(".svg")) return "image/svg+xml";
-        if (n.endsWith(".png")) return "image/png";
-        if (n.endsWith(".jpg") || n.endsWith(".jpeg")) return "image/jpeg";
-        if (n.endsWith(".csv")) return "text/csv";
-        if (n.endsWith(".txt")) return "text/plain";
-        if (n.endsWith(".woff2")) return "font/woff2";
-        return "application/octet-stream";
+    private static WebResourceResponse textResponse(int code, String reason, String body) {
+        return new WebResourceResponse("text/plain", "utf-8", code, reason,
+                new HashMap<String, String>(), new ByteArrayInputStream(body.getBytes()));
     }
 }

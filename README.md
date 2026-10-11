@@ -135,7 +135,8 @@
 ├── tests/
 │   ├── core.test.js            核心逻辑测试（71 项）
 │   ├── server.test.js          服务器测试（29 项）
-│   ├── browser-suite.js        端到端测试脚本（100 项）
+│   ├── browser-suite.js        端到端测试脚本（107 项）
+│   ├── android/                安卓请求路由测试（34 项）
 │   └── fixtures/               微信 / 支付宝账单样例
 ├── docs/                       使用说明、导入指南、打包指南、截图
 └── 启动记账本.bat
@@ -147,9 +148,10 @@
 
 ```bash
 npm test                  # 核心逻辑测试（71 项，纯 Node）
+npm run test:android      # 安卓端请求路由测试（34 项，纯逻辑，不需要手机）
 npm run test:server       # 服务器测试（29 项：口令、同步、冲突合并、备份）
-npm run test:browser      # 浏览器端到端测试（100 项，会启动无头 Chrome 并截图）
-npm run test:all          # 前两项
+npm run test:browser      # 浏览器端到端测试（107 项，会启动无头 Chrome 并截图）
+npm run test:all          # 前三项
 ```
 
 端到端测试会真实地走完整流程（记账、报销、导入、统计、导出 Excel、生成图片、备份还原、

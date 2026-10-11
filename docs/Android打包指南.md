@@ -29,7 +29,23 @@ npm run apk:verify    # 校验 APK 结构、资源、dex 与签名
 | 7 | `zipalign` | 让未压缩条目 4 字节对齐（Android 11+ 的硬性要求） |
 | 8 | `apksigner` | 用 `android-src/jizhangben.keystore` 签名 |
 
-### 两个已经踩过的坑（脚本里已处理）
+### 三个已经踩过的坑
+
+#### 1. 请求路由必须"先判断自己的域名"
+
+应用页面挂在 `https://app.local` 这个内部域名上，由 `shouldInterceptRequest` 从安装包里读取。
+如果判断顺序写反、先判断"是不是局域网地址"，`app.local` 会被当成局域网地址放行，
+WebView 就会去公网解析这个并不存在的域名 —— 结果打开应用只看到**「网页无法打开」**。
+
+现在路由规则抽到了 `android-src/java/com/daxuesheng/jizhangben/RequestRouting.java`，
+它不依赖任何安卓 API，可以直接在电脑上测：
+
+```bash
+npm run test:android
+```
+
+#### 2. aapt2 不支持中文路径
+
 
 - **aapt2 不支持中文路径**：`aapt2` 在 Windows 上遇到含中文的路径参数会报
   "failed to open directory"。所以脚本会把所有中间产物放到纯英文的临时目录
