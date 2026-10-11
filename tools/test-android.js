@@ -18,6 +18,7 @@ const JAVA = path.join(JDK, 'bin', 'java.exe');
 const PKG_DIR = path.join(ROOT, 'android-src', 'java', 'com', 'daxuesheng', 'jizhangben');
 const SOURCES = [
   path.join(PKG_DIR, 'RequestRouting.java'),
+  path.join(PKG_DIR, 'DisplayUtils.java'),
   path.join(ROOT, 'tests', 'android', 'HostCheckTest.java')
 ];
 

@@ -128,7 +128,7 @@ public class MainActivity extends Activity {
             @Override
             public void onPageFinished(WebView view, String url) {
                 // 页面重新加载后，之前写进去的变量会丢，这里再推一次
-                pushInsets(insetTop, insetBottom);
+                pushInsets(insetTopPx, insetBottomPx);
             }
 
             @Override
@@ -286,8 +286,9 @@ public class MainActivity extends Activity {
 
     /* ---------------- 系统栏 ---------------- */
 
-    private int insetTop = 0;
-    private int insetBottom = 0;
+    /* 保存的是物理像素，推送时再换算成 CSS 像素 */
+    private int insetTopPx = 0;
+    private int insetBottomPx = 0;
 
     private void setupSystemBars() {
         Window window = getWindow();
@@ -323,9 +324,15 @@ public class MainActivity extends Activity {
         applyBarAppearance(night);
     }
 
-    private void pushInsets(final int top, final int bottom) {
-        insetTop = top;
-        insetBottom = bottom;
+    /** 把系统栏的实测高度（物理像素）换算成 CSS 像素后交给网页 */
+    private void pushInsets(final int topPx, final int bottomPx) {
+        insetTopPx = topPx;
+        insetBottomPx = bottomPx;
+
+        float density = getResources().getDisplayMetrics().density;
+        final int top = DisplayUtils.physicalToCss(topPx, density);
+        final int bottom = DisplayUtils.physicalToCss(bottomPx, density);
+
         final String js = "(function(){var s=document.documentElement.style;"
                 + "s.setProperty('--safe-t-native','" + top + "px');"
                 + "s.setProperty('--safe-b-native','" + bottom + "px');})()";

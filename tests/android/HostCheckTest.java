@@ -60,6 +60,17 @@ public class HostCheckTest {
         check(RequestRouting.mimeOf("icon.svg").equals("image/svg+xml"), "svg");
         check(RequestRouting.mimeOf("没有扩展名").equals("application/octet-stream"), "未知类型 -> 二进制");
 
+        System.out.println("\n6. 物理像素换算成 CSS 像素（安全边距不能放大）");
+        check(DisplayUtils.physicalToCss(66, 2.75f) == 24, "66px @2.75 -> 24（状态栏 24dp）");
+        check(DisplayUtils.physicalToCss(105, 2.625f) == 40, "105px @2.625 -> 40");
+        check(DisplayUtils.physicalToCss(0, 3f) == 0, "0px -> 0");
+        check(DisplayUtils.physicalToCss(27, 2.75f) == 10, "27px @2.75 -> 10（四舍五入）");
+        check(DisplayUtils.physicalToCss(30, 1f) == 30, "密度 1 时保持不变");
+        check(DisplayUtils.physicalToCss(48, 0f) == 48, "拿不到密度时按原值返回（不会算成 0）");
+        check(DisplayUtils.physicalToCss(48, -1f) == 48, "密度异常时按原值返回");
+        // 关键回归：高密度手机上不能把物理像素直接当 CSS 像素用
+        check(DisplayUtils.physicalToCss(66, 2.75f) != 66, "高密度手机不会把安全边距放大 2.75 倍");
+
         System.out.println("\n" + repeat("=", 46));
         System.out.println("安卓逻辑测试：通过 " + pass + " 项，失败 " + fail + " 项");
         System.out.println(repeat("=", 46));
