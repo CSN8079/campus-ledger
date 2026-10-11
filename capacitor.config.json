@@ -1,0 +1,13 @@
+{
+  "appId": "com.daxuesheng.jizhangben",
+  "appName": "记账本",
+  "webDir": "web",
+  "bundledWebRuntime": false,
+  "android": {
+    "allowMixedContent": false,
+    "webContentsDebuggingEnabled": false
+  },
+  "server": {
+    "androidScheme": "https"
+  }
+}

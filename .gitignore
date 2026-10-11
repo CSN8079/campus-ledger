@@ -1,0 +1,22 @@
+# 依赖与构建产物
+node_modules/
+android/app/build/
+android/build/
+android/.gradle/
+android/local.properties
+android/app/src/main/assets/public/
+*.apk
+*.aab
+
+# 系统与编辑器
+.DS_Store
+Thumbs.db
+desktop.ini
+.vscode/
+.idea/
+
+# 用户本地数据（隐私账单，绝不入库）
+web/data/
+backup-*.json
+记账备份-*.json
+记账明细-*.csv
