@@ -217,17 +217,48 @@
 
   /* ---------------- 主解析流程 ---------------- */
   /* opts: { includeIgnore:bool, excludeRefund:bool, autoClassify:bool, dedupe:bool } */
-  I.parse = function (text, opts) {
+  /* 统一的空结果 */
+  function emptyStats(dataRows) {
+    return {
+      dataRows: dataRows || 0, total: 0, parsed: 0,
+      dup: 0, suspect: 0, ignored: 0, skipped: 0,
+      skipReasons: { footer: 0, noTime: 0, noAmount: 0, closed: 0 }
+    };
+  }
+
+  /* Excel 有时把日期存成「序列号」（1899-12-30 起算的天数），这里一并处理 */
+  function parseTimeCell(raw) {
+    const s = String(raw === null || raw === undefined ? '' : raw).trim();
+    if (/^\d+(\.\d+)?$/.test(s)) {
+      const n = Number(s);
+      if (n > 20000 && n < 80000) {
+        const d = new Date(Date.UTC(1899, 11, 30) + Math.round(n * 86400000));
+        return new Date(d.getUTCFullYear(), d.getUTCMonth(), d.getUTCDate(),
+          d.getUTCHours(), d.getUTCMinutes()).getTime();
+      }
+    }
+    return U.fromISO(s).getTime();
+  }
+
+  /* 解析一批已经拆分好的二维表。CSV 与 Excel(xlsx) 都走这里，
+     保证两种格式的结果完全一致。 */
+  I.parseRows = function (rows, opts, meta) {
     opts = Object.assign({
-      includeIgnore: false,   // 是否导入「不计收支」的流水
+      includeIgnore: true,    // 默认连「不计收支」的流水一起导入（导入后标记为不计入统计）
       excludeRefund: true,    // 退款相关流水标记为不计入统计
       autoClassify: true,
       dedupe: true
     }, opts || {});
+    meta = meta || {};
+    rows = rows || [];
 
-    const delim = guessDelim(text);
-    const rows = I.parseCSV(text, delim);
-    if (!rows.length) return { items: [], stats: { total: 0 }, detect: null, text: text };
+    if (!rows.length) {
+      return {
+        items: [], detect: null, looseIndex: new Map(),
+        source: meta.source || '', sheetName: meta.sheet || '', text: meta.text || '',
+        stats: emptyStats(0)
+      };
+    }
 
     const detect = I.detect(rows);
     const idx = detect.idx;
@@ -248,18 +279,22 @@
     });
 
     let dup = 0, suspect = 0, skipped = 0, ignored = 0;
+    /* 每一行都要有明确归宿：导入 / 重复 / 疑似重复 / 不计收支 / 其它原因跳过。
+       这样用户看到「文件里有 N 条、只导入 M 条」时，能知道差的那些去哪了。 */
+    const skipReasons = { footer: 0, noTime: 0, noAmount: 0, closed: 0 };
+    const dataRows = Math.max(0, rows.length - detect.headerIndex - 1);
 
     for (let r = detect.headerIndex + 1; r < rows.length; r++) {
       const row = rows[r];
       const cell = (k) => (idx[k] === undefined ? '' : String(row[idx[k]] === undefined ? '' : row[idx[k]]).trim());
       const rawTime = cell('time');
-      if (!rawTime) { skipped++; continue; }
+      if (!rawTime) { skipped++; skipReasons.noTime++; continue; }
       // 结尾的统计行 / 说明行
-      if (/^[-=]+$/.test(rawTime) || /共\s*\d+\s*笔/.test(row.join(''))) { skipped++; continue; }
+      if (/^[-=]+$/.test(rawTime) || /共\s*\d+\s*笔/.test(row.join(''))) { skipped++; skipReasons.footer++; continue; }
 
       const dir = normalizeDirection(cell('dir'));
       const amount = U.parseAmount(cell('amount'));
-      if (!amount || !isFinite(amount)) { skipped++; continue; }
+      if (!amount || !isFinite(amount)) { skipped++; skipReasons.noAmount++; continue; }
 
       const status = cell('status');
       const txKind = cell('txKind');
@@ -275,7 +310,7 @@
         forceExclude = true; excludeReason = '不计收支';
       }
       if (isRefund && opts.excludeRefund) { forceExclude = true; excludeReason = '退款'; }
-      if (/交易关闭|已关闭|已撤销|失败|已退款给|支付失败/.test(status)) { skipped++; continue; }
+      if (/交易关闭|已关闭|已撤销|失败|已退款给|支付失败/.test(status)) { skipped++; skipReasons.closed++; continue; }
 
       const counterparty = cleanText(cell('counterparty'));
       const item = cleanText(cell('item')) || cleanText(cell('note'));
@@ -284,7 +319,7 @@
       const orderNo = cleanText(cell('orderNo'));
       const merchantNo = cleanText(cell('merchantNo'));
 
-      const time = U.fromISO(rawTime).getTime();
+      const time = parseTimeCell(rawTime);
 
       // 自动分类
       let cat = null;
@@ -359,10 +394,45 @@
     return {
       items: items,
       detect: detect,
-      text: text,
       looseIndex: looseIndex,
-      stats: { total: items.length, dup: dup, suspect: suspect, skipped: skipped, ignored: ignored, parsed: items.length }
+      source: meta.source || '',
+      sheetName: meta.sheet || '',
+      text: meta.text || '',
+      stats: {
+        dataRows: dataRows,
+        total: items.length,
+        parsed: items.length,
+        dup: dup, suspect: suspect, ignored: ignored, skipped: skipped,
+        skipReasons: skipReasons
+      }
     };
+  };
+
+  /* 入口一：CSV 文本 */
+  I.parse = function (text, opts) {
+    const rows = I.parseCSV(text, guessDelim(text));
+    const r = I.parseRows(rows, opts, { source: 'csv', text: text });
+    r.text = text;
+    return r;
+  };
+
+  /* 入口二：Excel（.xlsx）。微信账单默认导出的就是这种格式。 */
+  I.parseXlsx = async function (arrayBuffer, opts) {
+    const Xlsx = global.Xlsx;
+    if (!Xlsx || typeof Xlsx.read !== 'function') throw new Error('xlsx 模块未加载');
+    const book = await Xlsx.read(arrayBuffer);
+
+    // 在多个工作表里挑一个「看起来像账单」的：能找到交易时间和金额两列
+    let chosen = null;
+    for (let i = 0; i < book.sheets.length; i++) {
+      const d = I.detect(book.sheets[i].rows || []);
+      if (d.idx.time !== undefined && d.idx.amount !== undefined) { chosen = book.sheets[i]; break; }
+    }
+    if (!chosen) chosen = book.sheets[0];
+
+    const r = I.parseRows(chosen.rows || [], opts, { source: 'xlsx', sheet: chosen.name });
+    r.sheets = book.sheets.map((s) => s.name);
+    return r;
   };
 
   /* ---------------- 提交入库 ---------------- */

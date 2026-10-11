@@ -247,6 +247,192 @@
     return writeZip(entries);
   };
 
+  /* ============================================================
+     读取 .xlsx（微信账单默认导出的是 Excel 文件）
+     ============================================================ */
+
+  /** 解压 deflate-raw（浏览器内置能力，安卓 WebView 也支持） */
+  async function inflateRaw(bytes) {
+    if (typeof DecompressionStream === 'undefined') {
+      throw new Error('当前浏览器不支持解压 .xlsx，请升级浏览器，或改用 CSV 格式导入');
+    }
+    const ds = new DecompressionStream('deflate-raw');
+    const stream = new Blob([bytes]).stream().pipeThrough(ds);
+    return new Uint8Array(await new Response(stream).arrayBuffer());
+  }
+
+  /** 解析 zip 的中央目录，得到每个条目的位置 */
+  function readZipDirectory(bytes) {
+    const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+    let eocd = -1;
+    const min = Math.max(0, bytes.length - 22 - 65535);
+    for (let i = bytes.length - 22; i >= min; i--) {
+      if (view.getUint32(i, true) === 0x06054b50) { eocd = i; break; }
+    }
+    if (eocd < 0) throw new Error('不是有效的 Excel 文件（.xlsx 应该是一个压缩包）');
+
+    const count = view.getUint16(eocd + 10, true);
+    let off = view.getUint32(eocd + 16, true);
+    const decoder = new TextDecoder('utf-8');
+    const entries = [];
+
+    for (let n = 0; n < count; n++) {
+      if (off + 46 > bytes.length) break;
+      if (view.getUint32(off, true) !== 0x02014b50) break;
+      const method = view.getUint16(off + 10, true);
+      const compSize = view.getUint32(off + 20, true);
+      const nameLen = view.getUint16(off + 28, true);
+      const extraLen = view.getUint16(off + 30, true);
+      const commentLen = view.getUint16(off + 32, true);
+      const localOff = view.getUint32(off + 42, true);
+      const name = decoder.decode(bytes.subarray(off + 46, off + 46 + nameLen));
+      const lNameLen = view.getUint16(localOff + 26, true);
+      const lExtraLen = view.getUint16(localOff + 28, true);
+      entries.push({
+        name: name,
+        method: method,
+        compSize: compSize,
+        dataStart: localOff + 30 + lNameLen + lExtraLen
+      });
+      off += 46 + nameLen + extraLen + commentLen;
+    }
+    return entries;
+  }
+
+  function parseXml(text) {
+    const doc = new DOMParser().parseFromString(text, 'application/xml');
+    const err = doc.getElementsByTagName('parsererror');
+    if (err && err.length) throw new Error('Excel 文件内容损坏，无法解析');
+    return doc;
+  }
+
+  /** "BC12" -> 54（列下标，从 0 开始） */
+  function colIndex(ref) {
+    let n = 0;
+    for (let i = 0; i < ref.length; i++) {
+      const c = ref.charCodeAt(i);
+      if (c >= 65 && c <= 90) n = n * 26 + (c - 64);
+      else if (c >= 97 && c <= 122) n = n * 26 + (c - 96);
+      else break;
+    }
+    return n - 1;
+  }
+
+  function sheetToRows(doc, shared) {
+    const rows = [];
+    const rowEls = doc.getElementsByTagName('row');
+
+    for (let i = 0; i < rowEls.length; i++) {
+      const rowEl = rowEls[i];
+      const rNum = parseInt(rowEl.getAttribute('r') || '', 10);
+      const rIdx = isFinite(rNum) && rNum > 0 ? rNum - 1 : rows.length;
+      const arr = [];
+      const cells = rowEl.getElementsByTagName('c');
+
+      for (let j = 0; j < cells.length; j++) {
+        const c = cells[j];
+        const ref = c.getAttribute('r') || '';
+        let ci = ref ? colIndex(ref) : arr.length;
+        if (!(ci >= 0)) ci = arr.length;
+
+        const type = c.getAttribute('t') || '';
+        let val = '';
+
+        if (type === 'inlineStr') {
+          const is = c.getElementsByTagName('is')[0];
+          if (is) {
+            const ts = is.getElementsByTagName('t');
+            const parts = [];
+            for (let k = 0; k < ts.length; k++) parts.push(ts[k].textContent || '');
+            val = parts.join('');
+          }
+        } else {
+          const v = c.getElementsByTagName('v')[0];
+          const raw = v ? (v.textContent || '') : '';
+          if (type === 's') val = shared[parseInt(raw, 10)] || '';
+          else if (type === 'b') val = raw === '1' ? 'TRUE' : 'FALSE';
+          else val = raw;
+        }
+
+        while (arr.length < ci) arr.push('');
+        arr[ci] = val;
+      }
+
+      while (rows.length < rIdx) rows.push([]);
+      rows[rIdx] = arr;
+    }
+    return rows;
+  }
+
+  /** 读取整个工作簿，返回 [{ name, rows }] */
+  X.read = async function (arrayBuffer) {
+    const bytes = new Uint8Array(arrayBuffer);
+    if (bytes.length < 4 || bytes[0] !== 0x50 || bytes[1] !== 0x4B) {
+      throw new Error('这不是 .xlsx 文件。如果是老式的 .xls 格式，请先在 Excel 里另存为 .xlsx 或 .csv');
+    }
+
+    const entries = readZipDirectory(bytes);
+    const byName = {};
+    entries.forEach(function (e) { byName[e.name] = e; });
+    const decoder = new TextDecoder('utf-8');
+
+    async function readText(name) {
+      const e = byName[name];
+      if (!e) return null;
+      const raw = bytes.subarray(e.dataStart, e.dataStart + e.compSize);
+      const data = e.method === 0 ? raw : await inflateRaw(raw);
+      return decoder.decode(data);
+    }
+
+    const workbookText = await readText('xl/workbook.xml');
+    if (!workbookText) throw new Error('Excel 文件里找不到工作簿定义');
+
+    const wb = parseXml(workbookText);
+    const relText = await readText('xl/_rels/workbook.xml.rels');
+    const relMap = {};
+    if (relText) {
+      const rels = parseXml(relText).getElementsByTagName('Relationship');
+      for (let i = 0; i < rels.length; i++) {
+        relMap[rels[i].getAttribute('Id')] = rels[i].getAttribute('Target');
+      }
+    }
+
+    const REL_NS = 'http://schemas.openxmlformats.org/officeDocument/2006/relationships';
+    const sheetEls = wb.getElementsByTagName('sheet');
+    const refs = [];
+    for (let i = 0; i < sheetEls.length; i++) {
+      const s = sheetEls[i];
+      const rid = s.getAttribute('r:id') || s.getAttributeNS(REL_NS, 'id') || '';
+      let target = relMap[rid] || '';
+      if (target.charAt(0) === '/') target = target.slice(1);
+      else if (target) target = 'xl/' + target.replace(/^\.\//, '');
+      refs.push({ name: s.getAttribute('name') || ('工作表' + (i + 1)), path: target });
+    }
+
+    /* 共享字符串表 */
+    const shared = [];
+    const ssText = await readText('xl/sharedStrings.xml');
+    if (ssText) {
+      const sis = parseXml(ssText).getElementsByTagName('si');
+      for (let i = 0; i < sis.length; i++) {
+        const ts = sis[i].getElementsByTagName('t');
+        const parts = [];
+        for (let k = 0; k < ts.length; k++) parts.push(ts[k].textContent || '');
+        shared.push(parts.join(''));
+      }
+    }
+
+    const sheets = [];
+    for (let i = 0; i < refs.length; i++) {
+      if (!refs[i].path) continue;
+      const xml = await readText(refs[i].path);
+      if (!xml) continue;
+      sheets.push({ name: refs[i].name, rows: sheetToRows(parseXml(xml), shared) });
+    }
+    if (!sheets.length) throw new Error('Excel 文件里没有可读取的工作表');
+    return { sheets: sheets };
+  };
+
   global.Xlsx = X;
   if (typeof module !== 'undefined' && module.exports) module.exports = X;
 })(typeof window !== 'undefined' ? window : globalThis);

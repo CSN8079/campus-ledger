@@ -221,6 +221,68 @@ function catName(tx) { return tx.categoryName || '(未分类)'; }
   const r = await Store.importObject(obj, 'merge');
   eq(r.tx, 11, '清空后可完整恢复 11 条账目');
 
+  /* ---------- 11. 导入行数核对 ---------- */
+  section('11. 导入行数核对：文件里的每一行都要有归宿');
+  const HEAD = '交易时间,交易分类,交易对方,对方账号,商品说明,收/支,金额,收/付款方式,交易状态,交易订单号,商家订单号,备注';
+  const lines = [
+    '支付宝交易记录明细查询',
+    '账号:[test@example.com]',
+    '起始日期:[2026-09-01 00:00:00]    终止日期:[2026-09-30 23:59:59]',
+    '---------------------------------交易记录明细列表------------------------------------',
+    HEAD
+  ];
+  let seqNo = 0;
+  const mkRow = (time, dir, amount, status) =>
+    [time, '其他', '商户' + (seqNo), '', '消费', dir, amount, '余额宝', status,
+      'X' + (String(++seqNo)).padStart(20, '0'), '', '/'].join(',');
+
+  for (let i = 0; i < 60; i++) {
+    lines.push(mkRow('2026-09-0' + (1 + (i % 9)) + ' 12:00:00', i % 10 === 0 ? '收入' : '支出', (10 + i) + '.00', '交易成功'));
+  }
+  for (let i = 0; i < 70; i++) {
+    lines.push(mkRow('2026-09-1' + (i % 9) + ' 09:00:00', '不计收支', (100 + i) + '.00', '交易成功'));
+  }
+  for (let i = 0; i < 4; i++) lines.push(mkRow('2026-09-05 10:00:00', '支出', '88.00', '交易关闭'));
+  for (let i = 0; i < 3; i++) lines.push(mkRow('2026-09-06 10:00:00', '支出', '', '交易成功'));
+  lines.push('------------------------------------------------------------------------------------');
+  lines.push('共 137 笔记录');
+  const bigText = lines.join('\n');
+
+  const base = { excludeRefund: true, autoClassify: true, dedupe: true };
+  const r1 = Importer.parse(bigText, Object.assign({ includeIgnore: false }, base));
+  const s1 = r1.stats;
+  console.log('    文件 ' + s1.dataRows + ' 行 = 导入 ' + r1.items.length + ' + 忽略 ' + s1.ignored + ' + 跳过 ' + s1.skipped);
+  eq(s1.dataRows, 139, '文件里共 139 行数据（137 笔流水 + 结尾 2 行说明）');
+  eq(r1.items.length, 60, '关闭选项时导入 60 条');
+  eq(s1.ignored, 70, '70 条「不计收支」被跳过');
+  eq(s1.skipped, 9, '9 行跳过（4 条已关闭 + 3 条无金额 + 2 行说明）');
+  eq(r1.items.length + s1.ignored + s1.skipped, s1.dataRows, '每一行都有归宿：导入 + 忽略 + 跳过 = 文件行数');
+  eq(s1.skipReasons.closed, 4, '跳过原因里「交易已关闭」4 条');
+  eq(s1.skipReasons.noAmount, 3, '跳过原因里「缺少金额」3 条');
+  eq(s1.skipReasons.footer, 2, '跳过原因里「结尾说明行」2 条');
+  eq(s1.dup + s1.suspect, 0, '这批数据里没有重复');
+
+  const r2 = Importer.parse(bigText, Object.assign({ includeIgnore: true }, base));
+  const s2 = r2.stats;
+  eq(r2.items.length, 130, '打开选项后导入 130 条');
+  eq(s2.ignored, 0, '不再有被忽略的行');
+  eq(r2.items.length + s2.ignored + s2.skipped, s2.dataRows, '打开选项后依然每一行都有归宿');
+  eq(r2.items.filter((it) => it.tx.excludeStat).length, 70, '70 条「不计收支」被标记为不计入统计');
+  const counted = Stats.summarize(r2.items.filter((it) => !it.tx.excludeStat).map((it) => it.tx));
+  eq(counted.count, 60, '计入统计的仍是 60 条，合计不受影响');
+
+  /* ---------- 12. Excel 日期序列号 ---------- */
+  section('12. Excel 里的日期序列号也能正确解析');
+  const serial = (y, m, d) => Math.round((Date.UTC(y, m - 1, d) - Date.UTC(1899, 11, 30)) / 86400000);
+  const xlsxLike = [
+    '交易时间,交易类型,交易对方,商品,收/支,金额(元),支付方式,当前状态,交易单号,商户单号,备注',
+    serial(2026, 9, 2) + ',商户消费,校园食堂,午餐,支出,¥15.00,零钱,支付成功,XS0001,M01,/'
+  ].join('\n');
+  const rSerial = Importer.parse(xlsxLike, { includeIgnore: true, excludeFilter: true });
+  eq(rSerial.items.length, 1, '解析出 1 条');
+  eq(U.toISODate(new Date(rSerial.items[0].tx.time)), '2026-09-02', '日期序列号被正确还原成 2026-09-02');
+  near(rSerial.items[0].tx.amount, 15, '金额正确');
+
   /* ---------- 汇总 ---------- */
   console.log('\n' + '='.repeat(52));
   console.log('测试完成：通过 ' + pass + ' 项，失败 ' + fail + ' 项');
