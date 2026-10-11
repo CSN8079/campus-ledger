@@ -147,6 +147,26 @@
     return '';
   }
 
+  /* ---------------- 「不计收支」流水的收支方向 ----------------
+     这类流水在账单里不带方向信息（收/支 列写的是「不计收支」），
+     必须按描述推断出来，否则余额宝收益会被当成支出、显示成负数。
+     注意：这不影响「是否计入统计」—— 它们依然不计入任何合计。 */
+  const INCOME_HINTS = ['收益', '利息', '转入', '收入', '退款', '退回', '发放',
+    '奖励', '返现', '收款', '报销', '补贴', '进账', '退款成功'];
+  const EXPENSE_HINTS = ['转出', '支出', '还款', '还花呗', '提现', '缴费', '扣款',
+    '付款', '消费', '购买', '买入', '转到银行卡', '转账到银行卡', '代扣', '生活费'];
+
+  function guessDirectionFromText(text) {
+    const s = String(text || '');
+    for (let i = 0; i < INCOME_HINTS.length; i++) {
+      if (s.indexOf(INCOME_HINTS[i]) >= 0) return 'income';
+    }
+    for (let i = 0; i < EXPENSE_HINTS.length; i++) {
+      if (s.indexOf(EXPENSE_HINTS[i]) >= 0) return 'expense';
+    }
+    return 'expense';   // 实在判断不出来时按支出处理（反正不计入统计）
+  }
+
   /* ---------------- 支付宝自带分类 -> 我们的分类 ---------------- */
   const ALIPAY_CAT_MAP = {
     '餐饮美食': '餐饮', '交通出行': '交通', '服饰装扮': '购物', '日用百货': '日用',
@@ -298,10 +318,20 @@
 
       const status = cell('status');
       const txKind = cell('txKind');
-      const isRefund = /退款/.test(status) || /退款/.test(txKind) || /退款/.test(cell('item'));
+      const counterparty = cleanText(cell('counterparty'));
+      const item = cleanText(cell('item')) || cleanText(cell('note'));
+      const note = cleanText(cell('note'));
+      const payMethod = cleanText(cell('payMethod'));
+      const orderNo = cleanText(cell('orderNo'));
+      const merchantNo = cleanText(cell('merchantNo'));
+      const isRefund = /退款/.test(status) || /退款/.test(txKind) || /退款/.test(item);
 
-      let type = dir === 'income' ? 'income' : 'expense';
-      if (!dir) type = /^-/.test(cell('amount')) || amount < 0 ? 'expense' : 'income';
+      /* 判断是收入还是支出 */
+      let type;
+      if (dir === 'income') type = 'income';
+      else if (dir === 'expense') type = 'expense';
+      else if (dir === 'ignore') type = guessDirectionFromText(counterparty + ' ' + item + ' ' + txKind + ' ' + status);
+      else type = /^-/.test(cell('amount')) || amount < 0 ? 'expense' : 'income';
 
       // 不计收支的流水按配置处理
       let forceExclude = false, excludeReason = '';
@@ -311,13 +341,6 @@
       }
       if (isRefund && opts.excludeRefund) { forceExclude = true; excludeReason = '退款'; }
       if (/交易关闭|已关闭|已撤销|失败|已退款给|支付失败/.test(status)) { skipped++; skipReasons.closed++; continue; }
-
-      const counterparty = cleanText(cell('counterparty'));
-      const item = cleanText(cell('item')) || cleanText(cell('note'));
-      const note = cleanText(cell('note'));
-      const payMethod = cleanText(cell('payMethod'));
-      const orderNo = cleanText(cell('orderNo'));
-      const merchantNo = cleanText(cell('merchantNo'));
 
       const time = parseTimeCell(rawTime);
 

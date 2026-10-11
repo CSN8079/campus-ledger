@@ -283,6 +283,36 @@ function catName(tx) { return tx.categoryName || '(未分类)'; }
   eq(U.toISODate(new Date(rSerial.items[0].tx.time)), '2026-09-02', '日期序列号被正确还原成 2026-09-02');
   near(rSerial.items[0].tx.amount, 15, '金额正确');
 
+  /* ---------- 13. 「不计收支」流水的收支方向 ---------- */
+  section('13. 「不计收支」流水的收支方向（余额宝收益不能显示成负数）');
+  const hintCsv = [
+    '交易时间,交易分类,交易对方,对方账号,商品说明,收/支,金额,收/付款方式,交易状态,交易订单号,商家订单号,备注',
+    '2026-09-01 00:00:00,投资理财,余额宝,,余额宝-收益发放,不计收支,0.02,余额宝,交易成功,AT0001,,/',
+    '2026-09-02 00:00:00,转账红包,余额宝,,余额宝-单次转入,不计收支,200.00,余额,交易成功,AT0002,,/',
+    '2026-09-03 00:00:00,转账红包,余额宝,,余额宝-单次转出,不计收支,150.00,余额宝,交易成功,AT0003,,/',
+    '2026-09-04 00:00:00,信用借还,花呗,,花呗-还款,不计收支,500.00,余额宝,交易成功,AT0004,,/',
+    '2026-09-05 00:00:00,转账,银行卡,,转账-转账到银行卡,不计收支,300.00,余额宝,交易成功,AT0005,,/',
+    '2026-09-06 00:00:00,其他,零钱通,,零钱提现,不计收支,100.00,零钱,提现成功,AT0006,,/'
+  ].join('\n');
+  const hintRes = Importer.parse(hintCsv, { includeIgnore: true, excludeRefund: true, autoClassify: true, dedupe: true });
+  eq(hintRes.items.length, 6, '解析出 6 条「不计收支」流水');
+  const typeOf = (kw) => {
+    const it = hintRes.items.find((x) => (x.tx.item + ' ' + x.tx.counterparty).indexOf(kw) >= 0);
+    return it ? it.tx.type : '(未找到)';
+  };
+  eq(typeOf('收益发放'), 'income', '余额宝收益 → 收入方向（显示 +0.02 而不是 -0.02）');
+  eq(typeOf('单次转入'), 'income', '余额宝转入 → 收入方向');
+  eq(typeOf('单次转出'), 'expense', '余额宝转出 → 支出方向');
+  eq(typeOf('还款'), 'expense', '花呗还款 → 支出方向');
+  eq(typeOf('转账到银行卡'), 'expense', '转账到银行卡 → 支出方向');
+  eq(typeOf('提现'), 'expense', '零钱提现 → 支出方向');
+  ok(hintRes.items.every((x) => x.tx.excludeStat === true), '这些流水依然全部标记为「不计入统计」');
+  const gain = hintRes.items.find((x) => x.tx.item.indexOf('收益发放') >= 0);
+  near(gain.tx.amount, 0.02, '收益金额解析为 0.02');
+  eq(U.fmtMoney(gain.tx.amount), '¥0.02', '金额显示为 ¥0.02');
+  eq(gain.tx.type === 'income' ? '+' + U.fmtMoney(gain.tx.amount).slice(1) : '', '+0.02',
+    '界面上会显示成 +0.02（不再是 -0.02）');
+
   /* ---------- 汇总 ---------- */
   console.log('\n' + '='.repeat(52));
   console.log('测试完成：通过 ' + pass + ' 项，失败 ' + fail + ' 项');
