@@ -60,7 +60,24 @@ public class HostCheckTest {
         check(RequestRouting.mimeOf("icon.svg").equals("image/svg+xml"), "svg");
         check(RequestRouting.mimeOf("没有扩展名").equals("application/octet-stream"), "未知类型 -> 二进制");
 
-        System.out.println("\n6. 物理像素换算成 CSS 像素（安全边距不能放大）");
+        System.out.println("\n6. 用户自己填的电脑地址必须放行（校园网等非私有网段）");
+        check(RequestRouting.routeFor("202.115.1.10", "202.115.1.10") == RequestRouting.ROUTE_PASSTHROUGH,
+                "非私有网段的地址：用户填了就放行（否则会表现为「同步失败」）");
+        check(RequestRouting.routeFor("sync.myhost.com", "sync.myhost.com") == RequestRouting.ROUTE_PASSTHROUGH,
+                "自定义域名：用户填了就放行");
+        check(RequestRouting.routeFor("202.115.1.10", "") == RequestRouting.ROUTE_BLOCK,
+                "没填地址时，非私有网段仍然拒绝");
+        check(RequestRouting.routeFor("202.115.1.11", "202.115.1.10") == RequestRouting.ROUTE_BLOCK,
+                "只放行填的那一个地址，同网段其它地址仍拒绝");
+        check(RequestRouting.routeFor("app.local", "app.local") == RequestRouting.ROUTE_ASSETS,
+                "应用自己的域名永远走安装包，不受影响");
+        RequestRouting.setAllowedHost("10.1.2.3");
+        check(RequestRouting.getAllowedHost().equals("10.1.2.3"), "允许通过接口设置");
+        check(RequestRouting.routeFor("10.1.2.3") == RequestRouting.ROUTE_PASSTHROUGH, "设置后立即生效");
+        RequestRouting.setAllowedHost(null);
+        check(RequestRouting.getAllowedHost().equals(""), "传 null 会清空");
+
+        System.out.println("\n7. 物理像素换算成 CSS 像素（安全边距不能放大）");
         check(DisplayUtils.physicalToCss(66, 2.75f) == 24, "66px @2.75 -> 24（状态栏 24dp）");
         check(DisplayUtils.physicalToCss(105, 2.625f) == 40, "105px @2.625 -> 40");
         check(DisplayUtils.physicalToCss(0, 3f) == 0, "0px -> 0");

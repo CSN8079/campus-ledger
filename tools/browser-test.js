@@ -204,6 +204,25 @@ async function main() {
       fs.writeFileSync(file, Buffer.from(shot.data, 'base64'));
       console.log('截图已保存：' + path.relative(ROOT, file));
     }
+    // 同步面板截图（展示状态卡与进度条）
+    await client.send('Runtime.evaluate', {
+      expression: 'window.AndroidApp={setSyncHost:function(){}};'
+        + 'Sync.config.url="192.168.1.7:8788"; Sync.config.token="demo";'
+        + 'Sync.config.lastSyncAt=Date.now(); Sync.config.lastResult={pushed:3,pulled:12,removed:1,serverTotal:156};'
+        + 'UI.go("settings");'
+        + 'setTimeout(function(){ UI.openSyncSheet();'
+        + 'setTimeout(function(){ Sync.setProgress(60,"电脑正在合并数据…",""); },500); },250);'
+    });
+    await sleep(1700);
+    const shotSync = await client.send('Page.captureScreenshot', { format: 'png' });
+    fs.writeFileSync(path.join(SHOT_DIR, 'sync-panel.png'), Buffer.from(shotSync.data, 'base64'));
+    console.log('截图已保存：' + path.relative(ROOT, path.join(SHOT_DIR, 'sync-panel.png')));
+    await client.send('Runtime.evaluate', {
+      expression: 'Sync.clearProgress(); UI.closeSheet(); delete window.AndroidApp;'
+        + 'Sync.config.url=""; Sync.config.token=""; Sync.config.lastSyncAt=0; Sync.config.lastResult=null;'
+    });
+    await sleep(400);
+
     // 导入预览截图（展示每行可切换「计入 / 不计入」）
     await client.send('Runtime.evaluate', {
       expression: '(function(){'

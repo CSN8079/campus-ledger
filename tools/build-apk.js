@@ -37,7 +37,7 @@ const WEB = path.join(ROOT, 'web');
 const DIST = path.join(ROOT, 'dist');
 const KEYSTORE_STORE = path.join(SRC, 'jizhangben.keystore');
 
-const APP_VERSION = '1.1.6';
+const APP_VERSION = '1.1.7';
 const APK_NAME = '记账本-v' + APP_VERSION + '.apk';
 const KS_PASS = 'jizhangben';
 const KS_ALIAS = 'jizhangben';
