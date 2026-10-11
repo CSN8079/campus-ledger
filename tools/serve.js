@@ -368,6 +368,55 @@ process.on('unhandledRejection', function (e) {
   console.error('  服务会继续运行。\n');
 });
 
+/* ---------------- AI 转发 ----------------
+   手机不方便直连 AI 服务商时，由电脑上的服务代为请求。
+   只允许转发到公网 http/https 地址，避免这个接口被用来探测内网。 */
+function isPrivateHostname(host) {
+  const h = String(host || '').toLowerCase().replace(/^\[|\]$/g, '');
+  if (!h) return true;
+  if (h === 'localhost' || h.endsWith('.localhost') || h.endsWith('.local')) return true;
+  if (h.indexOf(':') >= 0) return true;
+  if (!/^\d+\.\d+\.\d+\.\d+$/.test(h)) return false;
+  const p = h.split('.').map(Number);
+  if (p[0] === 10 || p[0] === 127 || p[0] === 0) return true;
+  if (p[0] === 192 && p[1] === 168) return true;
+  if (p[0] === 172 && p[1] >= 16 && p[1] <= 31) return true;
+  if (p[0] === 169 && p[1] === 254) return true;
+  return false;
+}
+
+function forwardRequest(url, headers, payload) {
+  return new Promise(function (resolve, reject) {
+    let u;
+    try { u = new URL(url); } catch (e) { reject(new Error('地址不合法')); return; }
+    const mod = u.protocol === 'https:' ? require('node:https') : require('node:http');
+    const bag = Object.assign({}, headers || {});
+    bag['Content-Length'] = Buffer.byteLength(payload);
+    const r2 = mod.request({
+      hostname: u.hostname,
+      port: u.port || (u.protocol === 'https:' ? 443 : 80),
+      path: u.pathname + (u.search || ''),
+      method: 'POST',
+      headers: bag,
+      timeout: 90000
+    }, function (r3) {
+      const chunks = [];
+      let size = 0;
+      r3.on('data', function (c) {
+        size += c.length;
+        if (size > 4 * 1024 * 1024) { r3.destroy(); return; }
+        chunks.push(c);
+      });
+      r3.on('end', function () {
+        resolve({ status: r3.statusCode || 0, body: Buffer.concat(chunks).toString('utf8') });
+      });
+    });
+    r2.on('timeout', function () { r2.destroy(new Error('等待 AI 服务响应超时')); });
+    r2.on('error', function (e) { reject(e); });
+    r2.end(payload);
+  });
+}
+
 async function handleRequest(req, res) {
   applyCors(req, res);
 
@@ -421,6 +470,28 @@ async function handleRequest(req, res) {
         return sendJSON(res, 200, result);
       } catch (e) {
         return sendJSON(res, 500, { ok: false, error: '合并失败：' + e.message });
+      }
+    }
+    /* AI 转发：手机 App 把请求交给电脑，由电脑去请求 AI 服务商 */
+    if (urlPath === '/api/ai' && req.method === 'POST') {
+      let body;
+      try { body = JSON.parse(await readBody(req, 512 * 1024) || '{}'); }
+      catch (e) { return sendJSON(res, 400, { ok: false, error: '请求格式不正确：' + e.message }); }
+      const target = String(body.url || '');
+      let parsed = null;
+      try { parsed = new URL(target); } catch (e) { parsed = null; }
+      if (!parsed || (parsed.protocol !== 'http:' && parsed.protocol !== 'https:')) {
+        return sendJSON(res, 400, { ok: false, error: '只支持 http/https 地址' });
+      }
+      if (isPrivateHostname(parsed.hostname)) {
+        return sendJSON(res, 403, { ok: false, error: '不允许转发到内网地址' });
+      }
+      try {
+        const out = await forwardRequest(target, body.headers || {}, JSON.stringify(body.payload || {}));
+        console.log('  [AI] 已转发到 ' + parsed.hostname + '，返回 ' + out.status);
+        return sendJSON(res, 200, { ok: true, status: out.status, body: out.body });
+      } catch (e) {
+        return sendJSON(res, 502, { ok: false, error: '转发失败：' + (e && e.message ? e.message : '未知错误') });
       }
     }
     if (urlPath === '/api/backups') {

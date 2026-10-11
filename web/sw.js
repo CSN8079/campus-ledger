@@ -1,5 +1,5 @@
 /* Service Worker：让记账本在断网时也能打开（缓存优先，后台更新） */
-const CACHE = 'jzb-cache-v1';
+const CACHE = 'jzb-cache-v2.0.0';
 const ASSETS = [
   './',
   './index.html',
@@ -12,6 +12,7 @@ const ASSETS = [
   './js/importer.js',
   './js/stats.js',
   './js/sync.js',
+  './js/ai.js',
   './js/datetime.js',
   './js/xlsx.js',
   './js/report.js',

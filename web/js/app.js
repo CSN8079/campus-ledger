@@ -73,10 +73,10 @@
   UI.screenInfoText = function () {
     const cs = getComputedStyle(document.documentElement);
     const num = (k) => Math.round(parseFloat(cs.getPropertyValue(k)) || 0);
-    return '视口 ' + window.innerWidth + '×' + window.innerHeight +
-      '　屏幕 ' + window.screen.width + '×' + window.screen.height +
-      '　原生边距 上' + num('--inset-t-px') + ' 下' + num('--inset-b-px') +
-      '　实际生效 上' + num('--safe-t') + ' 下' + num('--safe-b');
+    return '窗口大小 ' + window.innerWidth + '×' + window.innerHeight +
+      '　屏幕尺寸 ' + window.screen.width + '×' + window.screen.height +
+      '　手机报来的系统栏高度：上' + num('--inset-t-px') + ' 下' + num('--inset-b-px') +
+      '　界面真正留出的空白：上' + num('--safe-t') + ' 下' + num('--safe-b');
   };
 
   /* ---------------- 路由 ---------------- */
@@ -202,6 +202,7 @@
     if (global.Sync) {
       global.Sync.load();
       global.Sync.autoSyncOnStart();
+    if (global.AI) global.AI.load();
     }
     // 启动时检查一次自动备份
     if (global.Backup) global.Backup.autoOnStart();

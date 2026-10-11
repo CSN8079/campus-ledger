@@ -52,7 +52,7 @@ const byName = new Map(entries.map((e) => [e.name, e]));
 
 /* 1. 关键文件 */
 ['AndroidManifest.xml', 'resources.arsc', 'classes.dex', 'assets/www/index.html',
- 'assets/www/js/ui.js', 'assets/www/js/store.js', 'assets/www/css/app.css',
+ 'assets/www/js/ai.js', 'assets/www/js/sync.js', 'assets/www/js/ui.js', 'assets/www/js/store.js', 'assets/www/css/app.css',
  'assets/www/assets/icon-512.png', 'assets/www/js/importer.js',
  'assets/www/js/stats.js', 'assets/www/js/db.js', 'assets/www/js/defaults.js',
  'assets/www/js/util.js', 'assets/www/js/app.js', 'assets/www/manifest.webmanifest'

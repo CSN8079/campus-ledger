@@ -53,7 +53,16 @@
     try { global.AndroidApp.setSyncHost(host || ''); } catch (e) { /* 忽略 */ }
   };
 
-  Sync.guessDeviceName = function () {
+  Sync.guessDeviceName = function () {  /* 把「电脑地址」和「AI 接口地址」一起报给安卓外壳。
+     外壳只放行白名单里的主机，AI 服务地址不报上去，请求就会被拦掉。 */
+  global.updateNativeHosts = function () {
+    if (!global.AndroidApp) return;
+    Sync.syncHostToNative();
+    const ai = global.AI;
+    if (ai && typeof ai.syncHostToNative === "function") ai.syncHostToNative();
+  };
+
+
     const ua = String(navigator.userAgent || '');
     if (global.AndroidApp) return '安卓手机';
     if (/Android/i.test(ua)) return '安卓设备';

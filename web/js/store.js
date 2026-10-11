@@ -73,9 +73,17 @@
     };
   }
 
+  /* 分类 id 由「类型 + 名称」决定，两台设备算出来完全一样。
+     之前用随机 id，手机和电脑各自生成的默认分类 id 不同，
+     一同步就变成「所有分类都出现两个」。 */
+  function categoryIdOf(type, name) {
+    const tag = type === 'income' ? 'in' : (type === 'both' ? 'both' : 'ex');
+    return 'cat_' + tag + '_' + String(name || '').trim();
+  }
+
   function normalizeCategory(c, i) {
     return {
-      id: c.id || ('cat_' + U.uuid()),
+      id: c.id || categoryIdOf(c.type, c.name),
       name: c.name || '未命名',
       type: c.type === 'income' ? 'income' : (c.type === 'both' ? 'both' : 'expense'),
       icon: c.icon || '🏷️',
@@ -84,6 +92,7 @@
       excludeByDefault: !!c.excludeByDefault,
       builtin: !!c.builtin,
       order: typeof c.order === 'number' ? c.order : (i || 0) * 10,
+      idMigrated: !!c.idMigrated,
       updatedAt: c.updatedAt || Date.now()
     };
   }
@@ -119,6 +128,7 @@
     }
 
     Store.reindex();
+    await Store.normalizeCategories();   // 合并历史遗留的重复分类
     Store.loaded = true;
     return mode;
   };
@@ -159,7 +169,11 @@
 
   Store.addCategory = async function (data) {
     const maxOrder = Store.categories.reduce((m, c) => Math.max(m, c.order || 0), 0);
-    const cat = normalizeCategory(Object.assign({ order: maxOrder + 10 }, data));
+    const type = data.type === 'income' ? 'income' : (data.type === 'both' ? 'both' : 'expense');
+    const cat = normalizeCategory(Object.assign({
+      order: maxOrder + 10,
+      id: data.id || categoryIdOf(type, data.name)
+    }, data, { type: type, idMigrated: true }));
     Store.categories.push(cat);
     await DB.put('categories', cat);
     Store.reindex();
@@ -223,13 +237,13 @@
       if (byName.has('expense|' + name)) return;
       const def = expenseDefs.find((d) => d.name === name) || { name: name, icon: '🏷️', color: U.colorFromString(name) };
       order += 10;
-      created.push(normalizeCategory({ name: name, icon: def.icon, color: def.color, type: 'expense', builtin: true, order: order }));
+      created.push(normalizeCategory({ id: categoryIdOf('expense', name), name: name, icon: def.icon, color: def.color, type: 'expense', builtin: true, order: order, idMigrated: true }));
     });
     pack.income.forEach((name) => {
       if (byName.has('income|' + name)) return;
       const def = incomeDefs.find((d) => d.name === name) || { name: name, icon: '🏷️', color: U.colorFromString(name) };
       order += 10;
-      created.push(normalizeCategory({ name: name, icon: def.icon, color: def.color, type: 'income', builtin: true, order: order }));
+      created.push(normalizeCategory({ id: categoryIdOf('income', name), name: name, icon: def.icon, color: def.color, type: 'income', builtin: true, order: order, idMigrated: true }));
     });
 
     if (created.length) {
@@ -440,6 +454,50 @@
     const set = new Set();
     Store.tx.forEach((t) => t.tags.forEach((x) => set.add(x)));
     return Array.from(set).sort();
+  };
+
+  /* ---------------- 历史联想 ----------------
+     从已有账目里找「以前填过的来源 / 用途」，按「出现次数 + 最近使用」排序，
+     前缀相同的排前面。这样记账时能对齐以前的写法，统计才准。 */
+  Store.suggest = function (field, query, limit) {
+    const q = String(query || '').trim().toLowerCase();
+    const map = new Map();
+
+    Store.tx.forEach(function (t) {
+      const v = String(t[field] || '').trim();
+      if (!v) return;
+      let rec = map.get(v);
+      if (!rec) { rec = { value: v, count: 0, last: 0, cats: new Map() }; map.set(v, rec); }
+      rec.count++;
+      if (t.time > rec.last) rec.last = t.time;
+      if (t.categoryName) rec.cats.set(t.categoryName, (rec.cats.get(t.categoryName) || 0) + 1);
+    });
+
+    let list = Array.from(map.values());
+    if (q) list = list.filter(function (r) { return r.value.toLowerCase().indexOf(q) >= 0; });
+
+    list.sort(function (a, b) {
+      const ap = q && a.value.toLowerCase().indexOf(q) === 0 ? 0 : 1;
+      const bp = q && b.value.toLowerCase().indexOf(q) === 0 ? 0 : 1;
+      if (ap !== bp) return ap - bp;
+      if (b.count !== a.count) return b.count - a.count;
+      return b.last - a.last;
+    });
+
+    return limit ? list.slice(0, limit) : list;
+  };
+
+  /* 这个来源 / 用途历史上最常记成哪个分类 */
+  Store.commonCategoryFor = function (field, value) {
+    const v = String(value || '').trim();
+    if (!v) return null;
+    const rec = Store.suggest(field, '', 0).find(function (r) { return r.value === v; });
+    if (!rec) return null;
+    let best = null;
+    rec.cats.forEach(function (n, name) {
+      if (!best || n > best.count) best = { name: name, count: n };
+    });
+    return best;
   };
 
   /* ---------------- 导入规则 ---------------- */
@@ -690,6 +748,9 @@
 
     saveTombstonesSoon();
     Store.reindex();
+    // 另一台设备可能推上来同一分类的另一份，这里再合并一次
+    const fixed = await Store.normalizeCategories();
+    if (fixed && fixed.changed) stat.catMerged = fixed.changed;
     Store.emit('all');
     return stat;
   };
@@ -707,6 +768,78 @@
     Store.tombstones = {};
     Store.settingsUpdatedAt = 0;
     Store.reindex();
+  };
+
+  /* ============================================================
+     分类整理：合并同名同类型的重复分类，并把 id 迁成固定值
+     ============================================================ */
+  Store.normalizeCategories = async function () {
+    if (!Store.categories.length) return { changed: 0 };
+
+    const remap = new Map();     // 旧 id -> 保留的 id
+    const byKey = new Map();     // 类型|名称 -> 保留的那个分类
+    const usedIds = new Set();
+    const result = [];
+    let changed = 0;
+
+    // 排序保证两台设备挑中的「保留者」一致
+    const sorted = Store.categories.slice().sort(function (a, b) {
+      return (a.order || 0) - (b.order || 0) || String(a.name).localeCompare(String(b.name));
+    });
+
+    sorted.forEach(function (c) {
+      const key = c.type + '|' + c.name;
+      const kept = byKey.get(key);
+      if (kept) {
+        if (c.id !== kept.id) remap.set(c.id, kept.id);
+        changed++;
+        return;
+      }
+
+      const want = categoryIdOf(c.type, c.name);
+      let finalId = c.id;
+      if (!c.idMigrated) {
+        if (want !== c.id && !usedIds.has(want)) finalId = want;
+        c.idMigrated = true;
+      }
+      if (finalId !== c.id) { remap.set(c.id, finalId); changed++; }
+      c.id = finalId;
+
+      usedIds.add(finalId);
+      byKey.set(key, c);
+      result.push(c);
+    });
+
+    if (!changed) return { changed: 0 };
+
+    // 1) 账单改指向保留下来的分类
+    const byId = new Map(result.map(function (c) { return [c.id, c]; }));
+    const dirtyTx = [];
+    Store.tx.forEach(function (t) {
+      const to = remap.get(t.categoryId);
+      if (!to) return;
+      t.categoryId = to;
+      const c = byId.get(to);
+      if (c) t.categoryName = c.name;
+      t.updatedAt = Date.now();
+      dirtyTx.push(t);
+    });
+    if (dirtyTx.length) await DB.putMany('tx', dirtyTx);
+
+    // 2) 删掉被合并掉的旧分类，并留下删除标记（这样另一台设备也会一起合并）
+    const keepIds = new Set(result.map(function (c) { return c.id; }));
+    const dropIds = Array.from(remap.keys()).filter(function (id) { return !keepIds.has(id); });
+    if (dropIds.length) {
+      await DB.removeMany('categories', dropIds);
+      dropIds.forEach(function (id) { Store.addTombstone(id); });
+    }
+
+    // 3) 写回整理后的分类
+    await DB.putMany('categories', result);
+
+    Store.categories = result;
+    Store.reindex();
+    return { changed: changed, dropped: dropIds.length };
   };
 
   /* ============================================================

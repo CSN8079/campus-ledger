@@ -197,7 +197,27 @@ function tx(id, amount, updatedAt, extra) {
     const saved = JSON.parse(fs.readFileSync(DATA, 'utf8'));
     ok(Object.keys(saved.tx).length === 2, '磁盘上保存了 2 条账目（共 3 条，删除 1 条）');
 
-    section('8. 单个请求出错不会让服务退出');
+    section('8. 内置 AI 转发（手机可以借电脑的网去问 AI）');
+    res = await fetch(BASE + '/api/ai', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}' });
+    eq(res.status, 401, '没登录不能使用 AI 转发');
+
+    res = await api('/api/ai', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ url: 'ftp://example.com/x' }) });
+    let j8 = await res.json();
+    eq(res.status, 400, '只接受 http/https 地址');
+    eq(j8.ok, false, '返回 ok:false，前端能给出提示');
+
+    res = await api('/api/ai', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ url: 'http://127.0.0.1:9/v1/chat/completions' }) });
+    eq(res.status, 403, '不允许转发到本机地址（防止拿它探测内网）');
+
+    res = await api('/api/ai', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ url: 'http://192.168.1.1/x' }) });
+    eq(res.status, 403, '常见的路由器地址同样被拦下');
+
+    res = await api('/api/ai', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '这不是 JSON' });
+    eq(res.status, 400, '请求体不合法时返回 400，而不是让服务出错');
+    res = await api('/api/ping');
+    eq(res.status, 200, '几次非法请求之后服务依然存活');
+
+    section('9. 单个请求出错不会让服务退出');
     res = await fetch(BASE + '/api/login', {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
       body: '{ 这不是合法的 JSON'

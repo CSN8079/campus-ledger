@@ -231,6 +231,89 @@ public class MainActivity extends Activity {
             RequestRouting.setAllowedHost(host);
         }
 
+        /** 网页把 AI 接口的主机名告诉原生，请求路由会精确放行它 */
+        @JavascriptInterface
+        public void setAiHost(String host) {
+            RequestRouting.setAiHost(host);
+        }
+
+        /**
+         * 由原生发起一次 POST（给内置 AI 用）。
+         * 好处是彻底绕开网页的跨源限制；结果通过
+         * window.__aiCallbacks['id'](状态码, base64 正文) 回调给网页。
+         * 联网必须放在子线程，否则会卡住整个界面。
+         */
+        @JavascriptInterface
+        public void httpPost(final String id, final String url, final String headersJson, final String bodyJson) {
+            new Thread(new Runnable() {
+                @Override
+                public void run() {
+                    int status = 0;
+                    String text = "";
+                    java.net.HttpURLConnection conn = null;
+                    try {
+                        java.net.URL u = new java.net.URL(url);
+                        if (RequestRouting.routeFor(u.getHost()) == RequestRouting.ROUTE_BLOCK) {
+                            throw new IOException("这个地址不在允许访问的范围内");
+                        }
+                        conn = (java.net.HttpURLConnection) u.openConnection();
+                        conn.setRequestMethod("POST");
+                        conn.setConnectTimeout(15000);
+                        conn.setReadTimeout(90000);
+                        conn.setDoOutput(true);
+                        conn.setRequestProperty("Accept", "application/json");
+                        if (headersJson != null && headersJson.length() > 0) {
+                            org.json.JSONObject hs = new org.json.JSONObject(headersJson);
+                            java.util.Iterator<String> it = hs.keys();
+                            while (it.hasNext()) {
+                                String k = it.next();
+                                if ("Content-Length".equalsIgnoreCase(k) || "Host".equalsIgnoreCase(k)) continue;
+                                conn.setRequestProperty(k, hs.optString(k, ""));
+                            }
+                        }
+                        byte[] payload = (bodyJson == null ? "{}" : bodyJson)
+                                .getBytes(java.nio.charset.Charset.forName("UTF-8"));
+                        conn.setFixedLengthStreamingMode(payload.length);
+                        OutputStream os = conn.getOutputStream();
+                        os.write(payload);
+                        os.flush();
+                        os.close();
+
+                        status = conn.getResponseCode();
+                        InputStream in = (status >= 200 && status < 400)
+                                ? conn.getInputStream() : conn.getErrorStream();
+                        text = readAll(in);
+                    } catch (Exception e) {
+                        status = 0;
+                        text = "请求失败：" + (e.getMessage() == null ? "网络不通" : e.getMessage());
+                    } finally {
+                        if (conn != null) { try { conn.disconnect(); } catch (Exception ignore) { } }
+                    }
+                    final int fStatus = status;
+                    final String fText = text;
+                    runOnUiThread(new Runnable() {
+                        @Override
+                        public void run() {
+                            postAiResult(id, fStatus, fText);
+                        }
+                    });
+                }
+            }).start();
+        }
+
+        private String readAll(InputStream in) throws IOException {
+            if (in == null) return "";
+            java.io.ByteArrayOutputStream bos = new java.io.ByteArrayOutputStream();
+            byte[] buf = new byte[8192];
+            int n;
+            while ((n = in.read(buf)) > 0) {
+                bos.write(buf, 0, n);
+                if (bos.size() > 4 * 1024 * 1024) break;
+            }
+            in.close();
+            return new String(bos.toByteArray(), "UTF-8");
+        }
+
         /** 网页切换深色/浅色时告诉原生，好调整系统栏图标的颜色 */
         @JavascriptInterface
         public void setDark(final boolean dark) {
@@ -279,6 +362,19 @@ public class MainActivity extends Activity {
                 toast("保存失败：" + e.getMessage());
             }
         }
+    }
+
+    /** 把原生请求的结果回调给网页（正文用 base64 传，避免转义问题） */
+    private void postAiResult(String id, int status, String text) {
+        if (web == null) return;
+        String safeId = (id == null) ? "" : id.replaceAll("[^A-Za-z0-9_]", "");
+        String b64 = Base64.encodeToString(
+                String.valueOf(text == null ? "" : text)
+                        .getBytes(java.nio.charset.Charset.forName("UTF-8")),
+                Base64.NO_WRAP);
+        String js = "(function(){var c=window.__aiCallbacks&&window.__aiCallbacks['" + safeId + "'];"
+                + "if(typeof c==='function'){c(" + status + ",'" + b64 + "');}})()";
+        web.evaluateJavascript(js, null);
     }
 
     private void toast(final String msg) {
