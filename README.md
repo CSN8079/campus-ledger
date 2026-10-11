@@ -179,10 +179,10 @@
 ## 测试
 
 ```bash
-npm test                  # 核心逻辑测试（88 项，纯 Node）
+npm test                  # 核心逻辑测试（119 项，纯 Node）
 npm run test:android      # 安卓端纯逻辑测试（42 项，不需要手机）
 npm run test:server       # 服务器测试（29 项：口令、同步、冲突合并、备份）
-npm run test:browser      # 浏览器端到端测试（157 项，会启动无头 Chrome 并截图）
+npm run test:browser      # 浏览器端到端测试（201 项，会启动无头 Chrome 并截图）
 npm run test:all          # 前三项
 ```
 
