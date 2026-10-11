@@ -44,8 +44,14 @@
 
   /* ---------------- 底部弹层 ---------------- */
   let sheetCloser = null;
+  let sheetCloseTimer = null;
 
   UI.openSheet = function (opts) {
+    // 关键：取消上一次关闭时挂着的延时清理。
+    // 否则「关掉 A 后立刻打开 B」时，A 的清理会把 B 的内容抹掉，
+    // 而 is-open 还留着，于是出现一层看不见却挡住所有点击的遮罩。
+    if (sheetCloseTimer) { clearTimeout(sheetCloseTimer); sheetCloseTimer = null; }
+
     const root = $('#sheetRoot');
     U.clear(root);
     const sheet = U.el('div', { class: 'sheet', role: 'dialog', 'aria-modal': 'true' });
@@ -86,7 +92,12 @@
     if (!root.classList.contains('is-open')) return;
     root.classList.remove('is-open');
     const cb = sheetCloser; sheetCloser = null;
-    setTimeout(() => { U.clear(root); if (cb) cb(); }, 300);
+    if (sheetCloseTimer) clearTimeout(sheetCloseTimer);
+    sheetCloseTimer = setTimeout(() => {
+      sheetCloseTimer = null;
+      U.clear(root);
+      if (cb) cb();
+    }, 300);
   };
 
   /* ---------------- 确认框 ---------------- */
@@ -802,8 +813,8 @@
         U.el('div', { class: 'stat-card' }, [U.el('div', { class: 'k', text: '存储方式' }), U.el('div', { class: 'v small', text: global.DB.mode() === 'idb' ? 'IndexedDB' : 'localStorage' })])
       ]),
       U.el('div', { style: { display: 'flex', gap: '8px', marginTop: '12px', flexWrap: 'wrap' } }, [
-        U.el('button', { class: 'btn btn-sm', text: '清理演示/重复数据', onclick: () => UI.openCleanupSheet() }),
-        U.el('button', { class: 'btn btn-sm btn-danger', text: '清空全部数据', onclick: () => UI.confirmClear() })
+        U.el('button', { class: 'btn btn-sm', text: '清理重复数据', onclick: () => UI.openCleanupSheet() }),
+        U.el('button', { class: 'btn btn-sm', text: '清理数据…', onclick: () => UI.openClearDataSheet() })
       ])
     ]));
 
@@ -1802,25 +1813,8 @@
   };
 
   /* ---------------- 清空全部数据 ---------------- */
-  UI.confirmClear = async function () {
-    const ok = await UI.confirm({
-      title: '清空全部数据',
-      message: '这会删除设备上的所有账单、分类和设置。应用内的备份快照会保留，之后仍可在「自动备份 → 备份管理」里还原。确定要继续吗？',
-      okText: '我已备份，继续', danger: true
-    });
-    if (!ok) return;
-    const ok2 = await UI.confirm({ title: '再次确认', message: '真的要清空吗？此操作不可撤销。', okText: '清空', danger: true });
-    if (!ok2) return;
-    await Store.clearAllData();
-    await Store.applyPack('college', true);
-    const g = D.guessSemester(new Date());
-    const sem = { id: U.uuid(), name: g.name, start: g.start, end: g.end };
-    Store.settings.semesters = [sem];
-    Store.settings.activeSemesterId = sem.id;
-    await Store.saveSettings();
-    Store.emit('all');
-    UI.toast('已清空并恢复默认设置', 'ok');
-  };
+  /* 兼容旧入口：统一改为打开分级清理面板 */
+  UI.confirmClear = function () { UI.openClearDataSheet(); };
 
   global.UI = UI;
 })(window);
@@ -2274,6 +2268,157 @@
       title: '自动备份',
       body: body,
       actions: [{ label: '完成', primary: true, onClick: function () { UI.closeSheet(); } }]
+    });
+  };
+
+  global.UI = UI;
+})(window);
+/* ============================================================
+   ui.js - 界面渲染与交互（第八部分：分级清理数据）
+   把原来笼统的「清空全部数据」拆成几档，每一项只清掉指定的那部分。
+   ============================================================ */
+(function (global) {
+  'use strict';
+
+  const U = global.U, Store = global.Store, Backup = global.Backup;
+  const UI = global.UI;
+
+  UI.openClearDataSheet = async function (opts) {
+    opts = opts || {};
+
+    let backupCount = 0;
+    try { backupCount = (await Backup.list()).length; } catch (e) { /* 忽略 */ }
+
+    const txCount = Store.tx.length;
+    const catCount = Store.categories.length;
+
+    function row(cfg) {
+      return U.el('div', { class: 'clear-row' }, [
+        U.el('div', { class: 'cr-head' }, [
+          U.el('div', { class: 'cr-title', text: cfg.title }),
+          U.el('div', { class: 'cr-desc', text: cfg.desc })
+        ]),
+        U.el('button', {
+          class: 'btn btn-sm' + (cfg.danger ? ' btn-danger' : ''),
+          text: cfg.button,
+          disabled: cfg.disabled,
+          onclick: async function () {
+            const ok = await UI.confirm({
+              title: cfg.title,
+              message: cfg.message,
+              okText: cfg.okText || cfg.button,
+              danger: true
+            });
+            if (!ok) { UI.openClearDataSheet(opts); return; }
+
+            let msg = '';
+            try {
+              msg = await cfg.run();
+            } catch (e) {
+              UI.toast('操作失败：' + (e && e.message ? e.message : '未知错误'), 'err');
+              UI.openClearDataSheet(opts);
+              return;
+            }
+            UI.toast(msg, 'ok');
+            UI.renderSettings();
+            UI.openClearDataSheet({ note: msg });
+          }
+        })
+      ]);
+    }
+
+    const body = U.el('div');
+    body.appendChild(U.el('p', {
+      style: { fontSize: '12.5px', color: 'var(--text-soft)', lineHeight: '1.85', margin: '0 0 12px' },
+      text: '下面每一项只清掉你选的那一部分，其余内容原样保留，不用再担心一次清过头。'
+    }));
+
+    if (opts.note) body.appendChild(U.el('div', { class: 'dp-preview', text: opts.note }));
+
+    body.appendChild(U.el('div', { class: 'section-label', text: '分开清理' }));
+
+    body.appendChild(row({
+      title: '仅清空账单',
+      desc: txCount
+        ? '删除全部 ' + txCount + ' 条账目记录。分类、设置、备份都保留。'
+        : '目前没有账目记录。',
+      button: '清空账单',
+      disabled: !txCount,
+      message: '将删除全部 ' + txCount + ' 条账目记录，分类和设置会保留。此操作不可撤销。',
+      okText: '清空账单',
+      run: async function () {
+        const n = await Store.clearTransactions();
+        return '已清空 ' + n + ' 条账目记录';
+      }
+    }));
+
+    body.appendChild(row({
+      title: '仅清空分类',
+      desc: catCount
+        ? '删除全部 ' + catCount + ' 个分类，然后装回一套默认分类。已记录的账目会保留，仍然显示原来的分类名。'
+        : '目前没有分类。',
+      button: '清空分类',
+      disabled: !catCount,
+      message: '将删除 ' + catCount + ' 个分类，并恢复一套默认分类。账目记录不受影响。',
+      okText: '清空分类',
+      run: async function () {
+        const r = await Store.clearCategories();
+        return '已清空 ' + r.removed + ' 个分类，恢复 ' + r.added + ' 个默认分类';
+      }
+    }));
+
+    body.appendChild(row({
+      title: '仅清空设置',
+      desc: '学期、自动分类规则、显示偏好等恢复默认值。账目和分类都保留。',
+      button: '恢复默认',
+      message: '将把学期、自动分类规则、显示偏好等设置恢复为默认值。账目和分类不受影响。',
+      okText: '恢复默认',
+      run: async function () {
+        await Store.resetSettings();
+        return '设置已恢复默认';
+      }
+    }));
+
+    body.appendChild(row({
+      title: '清空备份快照',
+      desc: backupCount
+        ? '删除本机保存的 ' + backupCount + ' 份自动备份快照。账目、分类、设置都不受影响。'
+        : '目前没有备份快照。',
+      button: '清空备份',
+      disabled: !backupCount,
+      message: '将删除本机的 ' + backupCount + ' 份自动备份快照，删除后无法再还原到这些时间点。',
+      okText: '清空备份',
+      run: async function () {
+        const n = await Backup.clearAll();
+        return '已删除 ' + n + ' 份备份快照';
+      }
+    }));
+
+    const dangerBox = U.el('div', { class: 'clear-danger' });
+    dangerBox.appendChild(U.el('div', { class: 'section-label', text: '全部清除' }));
+    dangerBox.appendChild(row({
+      title: '⚠️ 清除所有数据',
+      desc: '账目、分类、设置、备份快照全部删除，且无法恢复。' +
+        (txCount || catCount ? '（当前有 ' + txCount + ' 条账目、' + catCount + ' 个分类）' : ''),
+      button: '清除所有',
+      danger: true,
+      message: '账目、分类、设置、应用内备份快照将全部删除，无法恢复。确定要继续吗？',
+      okText: '我已备份，继续',
+      run: async function () {
+        const r = await Store.wipeAll();
+        return '已清除全部数据（账目 ' + r.tx + ' 条、分类 ' + r.categories + ' 个）';
+      }
+    }));
+    body.appendChild(dangerBox);
+
+    body.appendChild(U.el('div', { class: 'sheet-note', html:
+      '・以上操作只作用于本机；如果其它设备还连着同步，删除会在下次同步时一并同步过去，不会倒灌回来。<br>' +
+      '・「清空备份快照」删掉之后就再也还原不回那些时间点了，请谨慎。' }));
+
+    UI.openSheet({
+      title: '清理数据',
+      body: body,
+      actions: [{ label: '关闭', primary: true, onClick: function () { UI.closeSheet(); } }]
     });
   };
 

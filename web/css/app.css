@@ -432,6 +432,18 @@ a { color: var(--primary); }
 .toast.err { background: rgba(229, 72, 77, .95); }
 @keyframes toastIn { from { opacity: 0; transform: translateY(10px); } to { opacity: 1; transform: none; } }
 
+/* ---------- 清理数据面板 ---------- */
+.clear-row {
+  display: flex; align-items: flex-start; justify-content: space-between; gap: 12px;
+  padding: 13px 0; border-bottom: 1px solid var(--line);
+}
+.clear-row:last-child { border-bottom: 0; }
+.clear-row .cr-head { flex: 1; min-width: 0; }
+.clear-row .cr-title { font-size: 14px; font-weight: 600; }
+.clear-row .cr-desc { font-size: 12px; color: var(--text-faint); line-height: 1.65; margin-top: 3px; }
+.clear-row .btn { flex: 0 0 auto; }
+.clear-danger { margin-top: 4px; padding-top: 6px; border-top: 2px solid var(--line); }
+
 /* ---------- 表格（导入预览） ---------- */
 .table-wrap { overflow-x: auto; border: 1px solid var(--line); border-radius: var(--radius-sm); -webkit-overflow-scrolling: touch; }
 table.prev { border-collapse: collapse; font-size: 12px; width: 100%; min-width: 560px; }

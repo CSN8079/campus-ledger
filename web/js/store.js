@@ -709,5 +709,74 @@
     Store.reindex();
   };
 
+  /* ============================================================
+     分级清理
+     每一档只清掉指定的那部分，其余内容原样保留；都尽量保留
+     「删除标记」并在同步时带到其它设备，避免清完又被同步回来。
+     ============================================================ */
+
+  /* 仅清空账单：分类、设置、备份都保留 */
+  Store.clearTransactions = async function () {
+    const ids = Store.tx.map((t) => t.id);
+    await DB.clear('tx');
+    ids.forEach((id) => Store.addTombstone(id));
+    Store.tx = [];
+    Store.reindex();
+    Store.emit('tx');
+    return ids.length;
+  };
+
+  /* 仅清空分类，随后自动装回一套默认分类，保证还能正常记账 */
+  Store.clearCategories = async function () {
+    const ids = Store.categories.map((c) => c.id);
+    await DB.clear('categories');
+    ids.forEach((id) => Store.addTombstone(id));
+    Store.categories = [];
+    Store.reindex();
+    const added = await Store.applyPack('college', true);
+    Store.emit('categories');
+    return { removed: ids.length, added: added };
+  };
+
+  /* 仅恢复默认设置（账目与分类保留） */
+  Store.resetSettings = async function () {
+    Store.settings = Object.assign({}, D.settings);
+    const g = D.guessSemester(new Date());
+    const sem = { id: U.uuid(), name: g.name, start: g.start, end: g.end };
+    Store.settings.semesters = [sem];
+    Store.settings.activeSemesterId = sem.id;
+    await Store.saveSettings();
+    Store.emit('settings');
+  };
+
+  /* 清除所有数据：账目、分类、设置、备份快照全部清掉。
+     但会保留「删除标记」，这样如果其它设备还连着同步，
+     下次同步时它们上面的数据也会被一并删除，而不是又倒灌回来。 */
+  Store.wipeAll = async function () {
+    const txIds = Store.tx.map((t) => t.id);
+    const catIds = Store.categories.map((c) => c.id);
+
+    await DB.clearAll();
+
+    Store.tx = [];
+    Store.categories = [];
+    Store.settings = Object.assign({}, D.settings);
+    const g = D.guessSemester(new Date());
+    const sem = { id: U.uuid(), name: g.name, start: g.start, end: g.end };
+    Store.settings.semesters = [sem];
+    Store.settings.activeSemesterId = sem.id;
+    Store.settingsUpdatedAt = 0;
+
+    Store.tombstones = {};
+    const now = Date.now();
+    txIds.concat(catIds).forEach((id) => { Store.tombstones[id] = now; });
+
+    Store.reindex();
+    await Store.saveSettings();
+    await DB.put('meta', { key: 'tombstones', value: Store.tombstones });
+    Store.emit('all');
+    return { tx: txIds.length, categories: catIds.length };
+  };
+
   global.Store = Store;
 })(window);

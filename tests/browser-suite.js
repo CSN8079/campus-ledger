@@ -437,6 +437,82 @@
   window.scrollTo(0, 0);
   await wait(200);
 
+  /* ---------- 26. 连续弹层不会卡住（回归测试） ---------- */
+  UI.openSheet({ title: '第一个', body: U.el('div', { text: 'A' }), actions: [{ label: '关闭', onClick: function () { UI.closeSheet(); } }] });
+  await wait(200);
+  UI.closeSheet();
+  await wait(120);   // 故意在旧弹层的 300ms 延时清理之前打开新弹层
+  UI.openSheet({ title: '第二个', body: U.el('div', { text: 'B' }), actions: [{ label: '确定', onClick: function () { UI.closeSheet(); } }] });
+  await wait(600);   // 越过旧清理本该触发的时刻
+  const h3 = $('#sheetRoot .sheet-head h3');
+  ok(!!h3 && h3.textContent === '第二个',
+    '新弹层没有被旧的延时清理抹掉（实际：' + (h3 ? h3.textContent : '空') + '）');
+  ok($('#sheetRoot').classList.contains('is-open'), '弹层仍处于打开状态');
+  let sheetClicked = false;
+  const sBtn = $('#sheetRoot .sheet-actions .btn');
+  ok(!!sBtn, '弹层里还有可点的按钮');
+  if (sBtn) { sBtn.addEventListener('click', function () { sheetClicked = true; }); sBtn.click(); }
+  await wait(150);
+  ok(sheetClicked, '弹层里的按钮可以正常点击（页面没有被看不见的遮罩挡住）');
+  await wait(500);
+  ok(!$('#sheetRoot').classList.contains('is-open'), '全部关闭后弹层不再拦截点击');
+
+  /* ---------- 27. 分级清理数据 ---------- */
+  const snapshot = Store.exportObject();          // 先存档，测完还原
+  const txBefore = Store.tx.length;
+  const catBefore = Store.categories.length;
+  await Store.addTx({ type: 'expense', amount: 9.99, time: Date.now(), categoryName: '其他', counterparty: '清理测试' });
+  ok(Store.tx.length === txBefore + 1, '先记一笔用于测试（' + Store.tx.length + ' 条）');
+
+  await UI.openClearDataSheet();
+  await wait(600);
+  const clearRows = $$('#sheetRoot .clear-row');
+  eq(clearRows.length, 5, '清理面板有 5 个分级选项');
+  ['仅清空账单', '仅清空分类', '仅清空设置', '清空备份快照', '清除所有数据'].forEach(function (name) {
+    ok($('#sheetRoot').textContent.indexOf(name) >= 0, '面板里有「' + name + '」');
+  });
+
+  /* 只清账单：分类必须留着 */
+  clearRows[0].querySelector('button').click();
+  await wait(550);
+  ok($('#sheetRoot').textContent.indexOf('将删除全部') >= 0, '弹出确认框');
+  $$('#sheetRoot .sheet-actions .btn')[1].click();
+  await wait(1100);
+  eq(Store.tx.length, 0, '仅清空账单：账目已清空');
+  eq(Store.categories.length, catBefore, '仅清空账单：分类完好（' + Store.categories.length + ' 个）');
+  ok($('#sheetRoot').textContent.indexOf('已清空') >= 0, '面板回到清理界面并显示结果');
+  ok($('#sheetRoot').querySelectorAll('.clear-row').length === 5, '清理面板依然完好可用');
+
+  /* 清完还能继续操作（这正是之前卡死的场景） */
+  let afterClearClickable = false;
+  const nextBtn = $$('#sheetRoot .clear-row')[2].querySelector('button');
+  if (nextBtn) { nextBtn.addEventListener('click', function () { afterClearClickable = true; }); nextBtn.click(); }
+  await wait(450);
+  ok(afterClearClickable, '清空之后面板里的按钮依然可以点击');
+  if ($('#sheetRoot').classList.contains('is-open')) UI.closeSheet();
+  await wait(450);
+
+  /* 还原现场 */
+  await Store.importObject(snapshot, 'replace');
+  await wait(400);
+  ok(Store.tx.length === txBefore + 1, '还原后数据恢复（' + Store.tx.length + ' 条）');
+  ok(Store.categories.length === catBefore, '分类也恢复（' + Store.categories.length + ' 个）');
+
+  /* 清除所有：连备份快照一起清掉 */
+  const bkN = (await Backup.list()).length;
+  const snap2 = Store.exportObject();
+  const wiped = await Store.wipeAll();
+  ok(wiped.tx > 0, '清除所有：清掉了 ' + wiped.tx + ' 条账目');
+  eq(Store.tx.length, 0, '清除所有：账目为空');
+  eq(Store.categories.length, 0, '清除所有：分类为空');
+  eq((await Backup.list()).length, 0, '清除所有：备份快照也为空（原本 ' + bkN + ' 份）');
+  ok(Store.settings.autoBackup === true, '清除所有：设置恢复默认');
+
+  /* 恢复现场，避免影响后面的截图 */
+  await Store.importObject(snap2, 'replace');
+  await wait(400);
+  ok(Store.tx.length === txBefore + 1 && Store.categories.length === catBefore, '测试结束后已还原现场');
+
   UI.go('home');
   await wait(250);
 

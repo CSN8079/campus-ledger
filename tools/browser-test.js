@@ -204,6 +204,15 @@ async function main() {
       fs.writeFileSync(file, Buffer.from(shot.data, 'base64'));
       console.log('截图已保存：' + path.relative(ROOT, file));
     }
+    // 清理数据面板截图
+    await client.send('Runtime.evaluate', { expression: 'UI.go("settings"); setTimeout(function(){ UI.openClearDataSheet(); }, 200);' });
+    await sleep(1200);
+    const shot4 = await client.send('Page.captureScreenshot', { format: 'png' });
+    fs.writeFileSync(path.join(SHOT_DIR, 'clear-data.png'), Buffer.from(shot4.data, 'base64'));
+    console.log('截图已保存：' + path.relative(ROOT, path.join(SHOT_DIR, 'clear-data.png')));
+    await client.send('Runtime.evaluate', { expression: 'UI.closeSheet();' });
+    await sleep(400);
+
     // 记账表单截图
     await client.send('Runtime.evaluate', { expression: 'UI.go("home"); setTimeout(function(){ UI.openTxSheet(null); }, 200);' });
     await sleep(900);

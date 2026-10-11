@@ -25,12 +25,15 @@
 
   /* ---------------- 浮层管理 ---------------- */
   let layerCloser = null;
+  let layerCloseTimer = null;
 
   function layerRoot() { return document.getElementById('pickerRoot'); }
 
   function openLayer(title, bodyNodes) {
     const root = layerRoot();
     if (!root) return;
+    // 同上：取消上一次关闭挂着的延时清理，避免把新浮层抹掉
+    if (layerCloseTimer) { clearTimeout(layerCloseTimer); layerCloseTimer = null; }
     U.clear(root);
     const sheet = U.el('div', { class: 'sheet' }, [
       U.el('div', { class: 'sheet-grip' }),
@@ -52,7 +55,8 @@
     if (!root) { if (cb) cb(); return; }
     if (!root.classList.contains('is-open')) { if (cb) cb(); return; }
     root.classList.remove('is-open');
-    setTimeout(() => { U.clear(root); if (cb) cb(); }, 280);
+    if (layerCloseTimer) clearTimeout(layerCloseTimer);
+    layerCloseTimer = setTimeout(() => { layerCloseTimer = null; U.clear(root); if (cb) cb(); }, 280);
   }
   UI.closePickerLayer = closeLayer;
 
