@@ -215,6 +215,16 @@
   UI.closeSheet();
   await wait(340);
 
+  /* ---------- 16. 安卓 App 环境适配 ---------- */
+  const saved = [];
+  window.AndroidApp = { save: function (name, b64) { saved.push({ name: name, len: (b64 || '').length }); } };
+  U.download('备份测试.json', '{"ok":1}', 'application/json');
+  await wait(500);
+  ok(saved.length === 1, '在安卓 App 环境中导出会走原生保存接口');
+  ok(saved.length === 1 && saved[0].name === '备份测试.json', '传给原生的文件名正确');
+  ok(saved.length === 1 && saved[0].len > 0, '传给原生的内容非空');
+  delete window.AndroidApp;
+
   UI.go('home');
   await wait(250);
 
