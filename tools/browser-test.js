@@ -271,6 +271,40 @@ async function main() {
     fs.writeFileSync(path.join(SHOT_DIR, 'add-transaction.png'), Buffer.from(shot2.data, 'base64'));
     console.log('截图已保存：' + path.relative(ROOT, path.join(SHOT_DIR, 'add-transaction.png')));
 
+    /* ---------- 横屏布局检查 ---------- */
+    await client.send('Emulation.setDeviceMetricsOverride', { width: 900, height: 430, deviceScaleFactor: 2, mobile: true });
+    await client.send('Runtime.evaluate', { expression: 'UI.closeSheet(); UI.go("stats")' });
+    await sleep(1000);
+    const landMsg = await client.send('Runtime.evaluate', {
+      expression: '(function(){'
+        + 'var v=document.querySelector(".view.is-active")||document.querySelector("#view-home");'
+        + 'var r=v.getBoundingClientRect();'
+        + 'var tb=document.querySelector(".tabbar").getBoundingClientRect();'
+        + 'var main=document.querySelector(".main").getBoundingClientRect();'
+        + 'return { innerWidth: innerWidth, sidebarRight: Math.round(tb.right),'
+        + ' mainWidth: Math.round(main.width), viewLeft: Math.round(r.left), viewRight: Math.round(r.right),'
+        + ' viewWidth: Math.round(r.width), blankRight: Math.round(innerWidth - r.right) };'
+        + '})()',
+      returnByValue: true
+    });
+    const land = (landMsg && landMsg.result && landMsg.result.value) || {};
+    console.log('\n横屏布局（900×430）：' + JSON.stringify(land));
+    if (land.sidebarRight > 100) {
+      console.log('  \u2713 横屏时改用左侧导航栏，底部不再占用高度');
+    } else {
+      console.error('  \u2717 横屏时没有切换到侧栏布局');
+      exitCode = 1;
+    }
+    if (land.blankRight <= 220) {
+      console.log('  \u2713 右侧空白仅 ' + land.blankRight + 'px（内容居中，宽度用起来了）');
+    } else {
+      console.error('  \u2717 右侧仍空着 ' + land.blankRight + 'px');
+      exitCode = 1;
+    }
+    const shotLand = await client.send('Page.captureScreenshot', { format: 'png' });
+    fs.writeFileSync(path.join(SHOT_DIR, 'landscape.png'), Buffer.from(shotLand.data, 'base64'));
+    console.log('截图已保存：' + path.relative(ROOT, path.join(SHOT_DIR, 'landscape.png')));
+
     /* ---------- 控制台错误 ---------- */
     const consoleErrors = client.events
       .filter((e) => e.method === 'Runtime.consoleAPICalled' && e.params.type === 'error')

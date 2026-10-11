@@ -25,6 +25,7 @@
   --shadow: 0 1px 2px rgba(16, 18, 32, .05), 0 6px 20px rgba(16, 18, 32, .06);
   --shadow-lg: 0 12px 40px rgba(16, 18, 32, .18);
   --tabbar-h: 58px;
+  --side-w: 216px;   /* 桌面/横屏布局下左侧导航栏的宽度 */
   /* 安全区
      --inset-*-px      安卓原生实测的系统栏高度（CSS 像素），由原生代码写入
      --safe-*-native   网页判断后决定是否启用这个兜底值（见 UI.applySafeArea）
@@ -512,24 +513,51 @@ table.prev tr.is-suspect { background: var(--warn-soft); }
 .drop .big { font-size: 30px; display: block; margin-bottom: 8px; }
 
 /* ---------- 桌面端适配 ---------- */
-@media (min-width: 900px) {
+/* 桌面端与手机横屏：都用左侧导航栏布局
+   横屏时底部标签栏会吃掉本就紧张的高度，改成侧栏更划算，也能把宽度用起来 */
+@media (min-width: 900px), (orientation: landscape) and (min-width: 680px) {
   :root { --tabbar-h: 0px; }
   .app { flex-direction: row; }
-  .topbar { position: fixed; top: 0; left: 0; bottom: 0; width: 216px; flex-direction: column; align-items: stretch; justify-content: flex-start; border-bottom: 0; border-right: 1px solid var(--line); padding: calc(var(--safe-t) + 18px) 14px 18px; }
+  .topbar { position: fixed; top: 0; left: 0; bottom: 0; width: var(--side-w); flex-direction: column; align-items: stretch; justify-content: flex-start; border-bottom: 0; border-right: 1px solid var(--line); padding: calc(var(--safe-t) + 18px) 14px 18px; }
   .topbar-title { margin-bottom: 18px; }
   .topbar-actions { order: 3; margin-top: auto; }
-  .tabbar { position: fixed; left: 0; top: 96px; bottom: auto; width: 216px; height: auto; grid-template-columns: 1fr; gap: 2px; padding: 0 12px; border-top: 0; background: none; backdrop-filter: none; }
+  .tabbar { position: fixed; left: 0; top: 96px; bottom: auto; width: var(--side-w); height: auto; grid-template-columns: 1fr; gap: 2px; padding: 0 12px; border-top: 0; background: none; backdrop-filter: none; }
   .tab { flex-direction: row; justify-content: flex-start; gap: 10px; padding: 11px 12px; border-radius: 11px; font-size: 14px; }
   .tab.is-active { background: var(--primary-soft); }
   .tab.is-active .tab-ico { transform: none; }
-  .main { margin-left: 216px; max-width: 1000px; padding: 20px 26px 130px; }
+
+  /* 关键：内容铺满侧边栏右侧的全部宽度，再把内容本身居中，
+     这样宽屏、横屏时右边不会再留下一大片空白 */
+  .main { margin-left: var(--side-w); max-width: none; padding: 20px 26px 130px; }
+  .view { max-width: 1180px; margin: 0 auto; }
+
   .fab { right: 34px; bottom: 34px; width: 62px; height: 62px; font-size: 28px; }
   .toast-root { bottom: 34px; }
-  .sheet { left: 50%; right: auto; transform: translate(-50%, 102%); width: 620px; bottom: 24px; border-radius: var(--radius-lg); padding-bottom: 20px; }
+  .sheet {
+    left: calc(var(--side-w) + (100vw - var(--side-w)) / 2);
+    right: auto; transform: translate(-50%, 102%);
+    width: min(620px, calc(100vw - var(--side-w) - 48px));
+    bottom: 24px; border-radius: var(--radius-lg); padding-bottom: 20px;
+  }
   .sheet-root.is-open .sheet, .picker-root.is-open .sheet { transform: translate(-50%, 0); }
   .stat-grid { grid-template-columns: repeat(4, 1fr); }
   .stat-grid.three { grid-template-columns: repeat(3, 1fr); }
   .cat-grid { grid-template-columns: repeat(6, 1fr); }
+}
+
+/* 手机横屏：侧栏收窄，竖向留白压缩，把高度让给内容 */
+@media (orientation: landscape) and (max-width: 899px) {
+  :root { --side-w: 168px; }
+  .topbar { padding: calc(var(--safe-t) + 12px) 10px 12px; }
+  .topbar-title { margin-bottom: 12px; gap: 8px; }
+  .topbar-title .subtitle { display: none; }
+  .topbar-title h1 { font-size: 16px; }
+  .logo { width: 30px; height: 30px; flex: 0 0 30px; border-radius: 9px; font-size: 15px; }
+  .tabbar { top: 80px; padding: 0 8px; }
+  .tab { padding: 9px 10px; font-size: 13px; gap: 8px; }
+  .main { padding: 14px 18px 96px; }
+  .fab { right: 20px; bottom: 20px; width: 52px; height: 52px; font-size: 24px; }
+  .toast-root { bottom: 20px; }
 }
 
 @media (max-width: 560px) {
