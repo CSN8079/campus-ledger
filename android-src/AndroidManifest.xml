@@ -1,0 +1,41 @@
+<?xml version="1.0" encoding="utf-8"?>
+<manifest xmlns:android="http://schemas.android.com/apk/res/android"
+    package="com.daxuesheng.jizhangben"
+    android:versionCode="1"
+    android:versionName="1.0.0">
+
+    <uses-sdk android:minSdkVersion="26" android:targetSdkVersion="34" />
+
+    <!--
+      应用自身不发起任何网络请求：页面资源全部来自安装包，
+      WebViewClient 里会拦截所有请求并只从 assets 读取。
+      这里声明网络权限仅为避免部分机型上 WebView 初始化时报错。
+    -->
+    <uses-permission android:name="android.permission.INTERNET" />
+
+    <application
+        android:label="@string/app_name"
+        android:icon="@mipmap/ic_launcher"
+        android:roundIcon="@mipmap/ic_launcher_round"
+        android:theme="@android:style/Theme.DeviceDefault.NoActionBar"
+        android:hardwareAccelerated="true"
+        android:usesCleartextTraffic="false"
+        android:allowBackup="true"
+        android:fullBackupContent="true"
+        android:supportsRtl="false">
+
+        <activity
+            android:name="com.daxuesheng.jizhangben.MainActivity"
+            android:exported="true"
+            android:label="@string/app_name"
+            android:launchMode="singleTask"
+            android:configChanges="orientation|screenSize|smallestScreenSize|screenLayout|keyboardHidden|uiMode|density|fontScale"
+            android:windowSoftInputMode="adjustResize">
+
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN" />
+                <category android:name="android.intent.category.LAUNCHER" />
+            </intent-filter>
+        </activity>
+    </application>
+</manifest>

@@ -94,6 +94,8 @@
 
   /* ---------------- 离线缓存 ---------------- */
   function registerSW() {
+    // 安卓 App 里的资源来自安装包本身，天然离线，无需再缓存
+    if (global.AndroidApp) return;
     if (!('serviceWorker' in navigator)) return;
     const okProto = location.protocol === 'https:' || location.hostname === 'localhost' || location.hostname === '127.0.0.1';
     if (!okProto) return;

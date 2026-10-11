@@ -2,8 +2,8 @@
   "name": "daxuesheng-jizhangben",
   "version": "1.0.0",
   "private": true,
-  "description": "大学生活记账本 —— 可在安卓手机与电脑上离线使用的记账应用",
-  "keywords": ["记账", "账单导入", "微信账单", "支付宝账单", "PWA", "离线"],
+  "description": "大学生活记账本 —— 可在安卓手机（APK）与电脑上离线使用的记账应用",
+  "keywords": ["记账", "账单导入", "微信账单", "支付宝账单", "安卓", "APK", "离线"],
   "license": "MIT",
   "scripts": {
     "start": "node tools/serve.js --open",
@@ -11,13 +11,10 @@
     "test": "node tests/core.test.js",
     "test:browser": "node tools/browser-test.js",
     "icons": "node tools/make-icons.js",
-    "android:add": "npx cap add android",
-    "android:sync": "npx cap sync android",
-    "android:apk": "cd android && gradlew.bat assembleDebug"
+    "apk:tools": "node tools/get-buildtools.js",
+    "apk:icons": "node tools/make-android-icons.js",
+    "apk:build": "node tools/build-apk.js",
+    "apk:verify": "node tools/verify-apk.js"
   },
-  "devDependencies": {
-    "@capacitor/android": "^6.1.2",
-    "@capacitor/cli": "^6.1.2",
-    "@capacitor/core": "^6.1.2"
-  }
+  "devDependencies": {}
 }

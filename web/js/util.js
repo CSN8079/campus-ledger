@@ -210,9 +210,24 @@
     });
   };
 
-  /* 下载文本/二进制为文件 */
+  /* 下载文本/二进制为文件
+     在安卓 App（WebView）内改走原生接口，保存到系统的「下载」目录；
+     在浏览器里则用标准的 Blob 下载。 */
   U.download = function (filename, data, mime) {
     const blob = data instanceof Blob ? data : new Blob([data], { type: mime || 'text/plain;charset=utf-8' });
+
+    if (global.AndroidApp && typeof global.AndroidApp.save === 'function') {
+      const fr = new FileReader();
+      fr.onload = function () {
+        const s = String(fr.result || '');
+        const comma = s.indexOf(',');
+        try { global.AndroidApp.save(filename, comma >= 0 ? s.slice(comma + 1) : s); }
+        catch (e) { console.error('保存失败', e); }
+      };
+      fr.readAsDataURL(blob);
+      return;
+    }
+
     const url = URL.createObjectURL(blob);
     const a = document.createElement('a');
     a.href = url; a.download = filename;

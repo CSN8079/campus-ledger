@@ -1,21 +1,23 @@
-# 依赖与构建产物
+# ---- 打包 APK 的工具链与中间产物（体积大，不入库）----
+.buildtools/
+android-build/
+
+# ---- Capacitor 方案（可选）产生的目录 ----
 node_modules/
 android/app/build/
 android/build/
 android/.gradle/
 android/local.properties
 android/app/src/main/assets/public/
-*.apk
-*.aab
 
-# 系统与编辑器
+# ---- 系统与编辑器 ----
 .DS_Store
 Thumbs.db
 desktop.ini
 .vscode/
 .idea/
 
-# 用户本地数据（隐私账单，绝不入库）
+# ---- 用户本地数据（隐私账单，绝不入库）----
 web/data/
 backup-*.json
 记账备份-*.json

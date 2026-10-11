@@ -1,6 +1,8 @@
 /* ============================================================
-   make-icons.js - 生成 PWA 图标（零依赖，只用 Node 内置模块）
-   用法： node tools/make-icons.js
+   make-icons.js - 生成图标（零依赖，只用 Node 内置模块）
+   同时被 make-android-icons.js 复用。
+
+   用法： node tools/make-icons.js             生成 web/ 的 PWA 图标
    ============================================================ */
 const fs = require('node:fs');
 const path = require('node:path');
@@ -37,14 +39,14 @@ function encodePNG(width, height, rgba) {
   const ihdr = Buffer.alloc(13);
   ihdr.writeUInt32BE(width, 0);
   ihdr.writeUInt32BE(height, 4);
-  ihdr[8] = 8;   // bit depth
-  ihdr[9] = 6;   // color type RGBA
+  ihdr[8] = 8;   // 位深
+  ihdr[9] = 6;   // RGBA
   ihdr[10] = 0; ihdr[11] = 0; ihdr[12] = 0;
 
   const stride = width * 4;
   const raw = Buffer.alloc((stride + 1) * height);
   for (let y = 0; y < height; y++) {
-    raw[y * (stride + 1)] = 0; // filter: none
+    raw[y * (stride + 1)] = 0; // 过滤器：无
     rgba.copy(raw, y * (stride + 1) + 1, y * stride, (y + 1) * stride);
   }
   const idat = zlib.deflateSync(raw, { level: 9 });
@@ -64,7 +66,7 @@ function distToSeg(px, py, x1, y1, x2, y2) {
   return Math.hypot(px - cx, py - cy);
 }
 
-/* ¥ 字形：五条笔画 */
+/* ¥ 字形：五条笔画（基准 512 坐标系） */
 const STROKES = [
   [140, 130, 256, 250],
   [372, 130, 256, 250],
@@ -72,6 +74,7 @@ const STROKES = [
   [170, 292, 342, 292],
   [170, 340, 342, 340]
 ];
+const STROKE_HALF = 23;
 
 function yuanDistance(x, y) {
   let d = Infinity;
@@ -79,7 +82,6 @@ function yuanDistance(x, y) {
   return d;
 }
 
-/* 圆角矩形内部判定 */
 function inRoundedRect(x, y, w, h, r) {
   if (x < 0 || y < 0 || x > w || y > h) return false;
   const cx = Math.min(Math.max(x, r), w - r);
@@ -89,13 +91,21 @@ function inRoundedRect(x, y, w, h, r) {
 
 function lerp(a, b, t) { return a + (b - a) * t; }
 
-/* 生成图标：scale 控制字形大小，radius 控制圆角（maskable 用 0） */
-function render(size, opts) {
+/**
+ * 生成一张图标 PNG
+ * opts.scale       字形缩放（1 = 占满设计基准）
+ * opts.radius      圆角半径（基准 512），0 = 直角（出血/自适应图标用）
+ * opts.transparent true = 透明背景 + 白色字形（安卓自适应图标的前景层）
+ * opts.bleed       true = 用满整个画布（安卓自适应图标用，四周留安全区）
+ */
+function renderIcon(size, opts) {
+  opts = opts || {};
+  const bleed = !!opts.bleed;
   const scale = (opts.scale || 1) * (size / S);
   const off = (size - S * scale) / 2;
-  const radius = (opts.radius === undefined ? 112 : opts.radius) * (size / S);
-  const half = 23 * scale;           // 笔画半宽
-  const SS = 3;                      // 3x3 超采样抗锯齿
+  const radius = bleed ? 0 : ((opts.radius === undefined ? 112 : opts.radius) * (size / S));
+  const transparent = !!opts.transparent;
+  const SS = 3; // 3x3 超采样抗锯齿
   const buf = Buffer.alloc(size * size * 4);
 
   for (let py = 0; py < size; py++) {
@@ -108,41 +118,49 @@ function render(size, opts) {
           total++;
           if (radius > 0 ? inRoundedRect(x, y, size, size, radius) : true) bgHits++;
           const dx = (x - off) / scale, dy = (y - off) / scale;
-          if (dx > -60 && dx < 572 && dy > -60 && dy < 572 && yuanDistance(dx, dy) <= 23) fgHits++;
+          if (dx > -80 && dx < 592 && dy > -80 && dy < 592 && yuanDistance(dx, dy) <= STROKE_HALF) fgHits++;
         }
       }
       const i = (py * size + px) * 4;
       const aBg = bgHits / total;
       const aFg = fgHits / total;
 
-      // 渐变背景：#4f46e5 -> #9d7bff
-      const t = Math.min(1, Math.max(0, (px + py) / (2 * size)));
-      let r = lerp(79, 157, t), g = lerp(70, 123, t), b = lerp(229, 255, t);
-      // 白色 ¥ 覆盖
-      r = lerp(r, 255, aFg); g = lerp(g, 255, aFg); b = lerp(b, 255, aFg);
+      let r, g, b, a;
+      if (transparent) {
+        r = 255; g = 255; b = 255; a = aFg;
+      } else {
+        // 渐变背景：#4f46e5 -> #9d7bff
+        const t = Math.min(1, Math.max(0, (px + py) / (2 * size)));
+        r = lerp(79, 157, t); g = lerp(70, 123, t); b = lerp(229, 255, t);
+        r = lerp(r, 255, aFg); g = lerp(g, 255, aFg); b = lerp(b, 255, aFg);
+        a = aBg;
+      }
 
       buf[i] = Math.round(r);
       buf[i + 1] = Math.round(g);
       buf[i + 2] = Math.round(b);
-      buf[i + 3] = Math.round(aBg * 255);
+      buf[i + 3] = Math.round(a);
     }
   }
   return encodePNG(size, size, buf);
 }
 
-const outDir = path.join(__dirname, '..', 'web', 'assets');
-fs.mkdirSync(outDir, { recursive: true });
+module.exports = { renderIcon, encodePNG };
 
-const jobs = [
-  ['icon-192.png', 192, { scale: 1, radius: 112 }],
-  ['icon-512.png', 512, { scale: 1, radius: 112 }],
-  ['icon-maskable-512.png', 512, { scale: 0.68, radius: 0 }],
-  ['apple-touch-icon.png', 180, { scale: 1, radius: 0 }]
-];
-
-jobs.forEach(([name, size, opts]) => {
-  const png = render(size, opts);
-  fs.writeFileSync(path.join(outDir, name), png);
-  console.log('生成 ' + name + '  ' + size + 'x' + size + '  ' + png.length + ' 字节');
-});
-console.log('图标输出目录：' + outDir);
+/* ---------- 直接运行：生成 PWA 图标 ---------- */
+if (require.main === module) {
+  const outDir = path.join(__dirname, '..', 'web', 'assets');
+  fs.mkdirSync(outDir, { recursive: true });
+  const jobs = [
+    ['icon-192.png', 192, { scale: 1, radius: 112 }],
+    ['icon-512.png', 512, { scale: 1, radius: 112 }],
+    ['icon-maskable-512.png', 512, { scale: 0.68, radius: 0 }],
+    ['apple-touch-icon.png', 180, { scale: 1, radius: 0 }]
+  ];
+  jobs.forEach(([name, size, opts]) => {
+    const png = renderIcon(size, opts);
+    fs.writeFileSync(path.join(outDir, name), png);
+    console.log('生成 ' + name + '  ' + size + 'x' + size + '  ' + png.length + ' 字节');
+  });
+  console.log('图标输出目录：' + outDir);
+}
