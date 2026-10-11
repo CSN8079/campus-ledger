@@ -4,7 +4,17 @@ const path = require('node:path');
 const { execFileSync } = require('node:child_process');
 
 const ROOT = path.join(__dirname, '..');
-const apk = process.argv[2] || path.join(ROOT, 'dist', '记账本-v1.0.0.apk');
+function findApk() {
+  if (process.argv[2]) return process.argv[2];
+  const dir = path.join(ROOT, 'dist');
+  if (!fs.existsSync(dir)) throw new Error('还没有 dist 目录，请先运行 node tools/build-apk.js');
+  const files = fs.readdirSync(dir).filter(function (f) { return /\.apk$/i.test(f); })
+    .map(function (f) { return { f: f, t: fs.statSync(path.join(dir, f)).mtimeMs }; })
+    .sort(function (a, b) { return b.t - a.t; });
+  if (!files.length) throw new Error('dist 目录里没有 APK，请先运行 node tools/build-apk.js');
+  return path.join(dir, files[0].f);
+}
+const apk = findApk();
 const buf = fs.readFileSync(apk);
 
 /* 解析中央目录 */

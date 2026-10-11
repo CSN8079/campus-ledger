@@ -104,7 +104,7 @@ async function main() {
     '--window-size=430,932',
     '--remote-debugging-port=' + PORT,
     '--user-data-dir=' + profile,
-    BASE_URL
+    'about:blank'
   ], { stdio: 'ignore' });
 
   let client = null;
@@ -118,7 +118,12 @@ async function main() {
     await client.send('Emulation.setDeviceMetricsOverride', {
       width: 430, height: 932, deviceScaleFactor: 2, mobile: true
     });
-    await sleep(600);
+    // 进入应用前先关掉自动同步，保证测试结果不受服务器上已有数据影响
+    await client.send('Page.addScriptToEvaluateOnNewDocument', {
+      source: "try{localStorage.setItem('jzb:sync',JSON.stringify({autoSync:false,url:'',token:'',deviceName:'测试机',lastSyncAt:0,lastResult:null}));}catch(e){}"
+    });
+    await client.send('Page.navigate', { url: BASE_URL });
+    await sleep(2500);
 
     const suiteExpr = fs.readFileSync(path.join(ROOT, 'tests', 'browser-suite.js'), 'utf8');
 
@@ -130,12 +135,14 @@ async function main() {
       timeout: 120000
     });
 
+    let suiteValue = null;
     if (res.exceptionDetails) {
       console.error('测试脚本抛出异常：');
       console.error(JSON.stringify(res.exceptionDetails, null, 2).slice(0, 2000));
       exitCode = 1;
     } else {
       const value = res.result && res.result.value;
+      suiteValue = value;
       if (!value || !value.results) {
         console.error('未取得测试结果：', JSON.stringify(res).slice(0, 1000));
       } else {
@@ -145,6 +152,23 @@ async function main() {
         console.log('库内账目 ' + value.summary.txCount + ' 条，分类 ' + value.summary.catCount + ' 个');
         console.log('='.repeat(54));
         exitCode = value.summary.fail ? 1 : 0;
+      }
+    }
+
+    /* ---------- 保存测试中生成的报表文件，便于人工检查 ---------- */
+    if (suiteValue && suiteValue.artifacts) {
+      const outDir = path.join(ROOT, 'tests', 'out');
+      fs.mkdirSync(outDir, { recursive: true });
+      if (suiteValue.artifacts.xlsx) {
+        const f = path.join(outDir, 'report.xlsx');
+        fs.writeFileSync(f, Buffer.from(suiteValue.artifacts.xlsx.b64, 'base64'));
+        console.log('报表文件：' + path.relative(ROOT, f) + '（' + fs.statSync(f).size + ' 字节）');
+      }
+      if (suiteValue.artifacts.png) {
+        const f = path.join(outDir, 'report-image.png');
+        fs.mkdirSync(path.dirname(f), { recursive: true });
+        fs.writeFileSync(f, Buffer.from(suiteValue.artifacts.png.b64, 'base64'));
+        console.log('报告图片：' + path.relative(ROOT, f) + '（' + fs.statSync(f).size + ' 字节）');
       }
     }
 

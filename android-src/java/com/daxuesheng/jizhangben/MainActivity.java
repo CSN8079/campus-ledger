@@ -67,7 +67,9 @@ public class MainActivity extends Activity {
         s.setMediaPlaybackRequiresUserGesture(true);
         s.setCacheMode(WebSettings.LOAD_DEFAULT);
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.LOLLIPOP) {
-            s.setMixedContentMode(WebSettings.MIXED_CONTENT_NEVER_ALLOW);
+            // 页面本身走 https://app.local，但要能和电脑上的 http 服务通信（同步数据），
+            // 因此必须允许混合内容。外部公网地址在请求拦截里仍会被拒绝。
+            s.setMixedContentMode(WebSettings.MIXED_CONTENT_ALWAYS_ALLOW);
         }
 
         boolean night = (getResources().getConfiguration().uiMode
@@ -81,12 +83,13 @@ public class MainActivity extends Activity {
             @Override
             public WebResourceResponse shouldInterceptRequest(WebView view, WebResourceRequest req) {
                 Uri u = req.getUrl();
-                // 只服务应用自己的域名，其余一律拒绝（保证不联网）
-                if (u == null || !HOST.equals(u.getHost())) {
-                    return new WebResourceResponse("text/plain", "utf-8", 403, "Forbidden",
-                            new HashMap<String, String>(),
-                            new ByteArrayInputStream("blocked".getBytes()));
-                }
+                if (u == null) return blocked();
+
+                // 局域网地址：放行给系统正常请求，用于和电脑上的服务同步数据
+                if (isPrivateHost(u.getHost())) return null;
+
+                // 应用自身的域名：从安装包里读取页面资源
+                if (!HOST.equals(u.getHost())) return blocked();
                 String path = u.getPath();
                 if (path == null || path.length() == 0 || "/".equals(path)) {
                     path = "/index.html";
@@ -196,7 +199,7 @@ public class MainActivity extends Activity {
     @SuppressWarnings("deprecation")
     public void onBackPressed() {
         web.evaluateJavascript(
-                "(function(){try{if(window.UI&&document.querySelector('#sheetRoot.is-open')){UI.closeSheet();return 'sheet';}}catch(e){}return 'none';})()",
+                "(function(){try{if(window.UI&&window.UI.closePickerLayer&&document.querySelector('#pickerRoot.is-open')){UI.closePickerLayer();return 'sheet';}if(window.UI&&document.querySelector('#sheetRoot.is-open')){UI.closeSheet();return 'sheet';}}catch(e){}return 'none';})()",
                 new ValueCallback<String>() {
                     @Override
                     public void onReceiveValue(String value) {
@@ -256,6 +259,35 @@ public class MainActivity extends Activity {
                 Toast.makeText(MainActivity.this, msg, Toast.LENGTH_LONG).show();
             }
         });
+    }
+
+    /* 拒绝访问的响应 */
+    private static WebResourceResponse blocked() {
+        return new WebResourceResponse("text/plain", "utf-8", 403, "Forbidden",
+                new HashMap<String, String>(),
+                new ByteArrayInputStream("blocked".getBytes()));
+    }
+
+    /* 判断是不是局域网 / 本机地址（只有这些地址才允许真正联网） */
+    private static boolean isPrivateHost(String host) {
+        if (host == null || host.length() == 0) return false;
+        if ("localhost".equals(host) || "127.0.0.1".equals(host) || "::1".equals(host)) return true;
+        if (host.endsWith(".local")) return true;
+        String[] p = host.split("\\.");
+        if (p.length == 4) {
+            try {
+                int a = Integer.parseInt(p[0]);
+                int b = Integer.parseInt(p[1]);
+                Integer.parseInt(p[2]);
+                Integer.parseInt(p[3]);
+                if (a == 10) return true;
+                if (a == 192 && b == 168) return true;
+                if (a == 172 && b >= 16 && b <= 31) return true;
+            } catch (NumberFormatException ignore) {
+                return false;
+            }
+        }
+        return false;
     }
 
     private static String mimeOf(String name) {
