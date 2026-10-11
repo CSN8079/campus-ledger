@@ -696,6 +696,109 @@
       '再点一下恢复成「显示」：' + (back ? back.textContent : '-'));
   }
 
+  /* ---------- 34. 同步面板：状态卡与实时进度 ---------- */
+  UI.openSyncSheet();
+  await wait(600);
+  ok(!!$('#sheetRoot .sync-status'), '同步面板有状态卡');
+  ok($('#sheetRoot').textContent.indexOf('本机名称') >= 0, '面板显示本机名称');
+  ok($('#sheetRoot').textContent.indexOf('同步规则') >= 0, '面板说明同步规则');
+  ok(!$('#sheetRoot .sync-progress'), '空闲时没有进度条');
+
+  Sync.setProgress(20, '正在上传到电脑…', '本机 5 条');
+  await wait(300);
+  ok(!!$('#sheetRoot .sync-progress'), '同步中会出现进度条');
+  ok($('#sheetRoot').textContent.indexOf('20%') >= 0, '进度条显示百分比 20%');
+  ok($('#sheetRoot').textContent.indexOf('正在上传到电脑') >= 0, '进度条显示当前步骤');
+
+  Sync.setProgress(60, '电脑正在合并数据…', '');
+  await wait(300);
+  ok($('#sheetRoot').textContent.indexOf('60%') >= 0, '百分比会实时更新到 60%');
+  ok($('#sheetRoot').textContent.indexOf('电脑正在合并数据') >= 0, '步骤文字实时更新');
+
+  Sync.setProgress(100, '同步完成', '上传 2 项　下载 3 项　电脑上共 10 条');
+  await wait(300);
+  ok($('#sheetRoot').textContent.indexOf('100%') >= 0, '完成后显示 100%');
+  ok($('#sheetRoot').textContent.indexOf('上传 2 项') >= 0, '完成后显示结果明细');
+  Sync.clearProgress();
+  await wait(250);
+  UI.closeSheet();
+  await wait(420);
+
+  /* ---------- 35. 安卓 App：记住口令后不再要求输入 ---------- */
+  window.AndroidApp = { setSyncHost: function () { /* 记录用 */ } };
+  const syncUrlBefore = Sync.config.url;
+  const syncTokenBefore = Sync.config.token;
+
+  Sync.config.url = '192.168.1.7:8788';
+  Sync.config.token = '';
+  ok(Sync.isApp() === true, '能识别安卓 App 环境');
+  ok(Sync.needsPassword() === true, '还没拿到令牌时需要输口令');
+  ok(Sync.isConnected() === false, '此时不算已连接');
+
+  UI.openSyncSheet();
+  await wait(600);
+  ok($('#sheetRoot').textContent.indexOf('访问口令') >= 0, '未连接时显示口令输入框');
+  UI.closeSheet();
+  await wait(420);
+
+  Sync.config.token = 'test-token-abc';
+  ok(Sync.needsPassword() === false, '拿到令牌后不再需要输口令');
+  ok(Sync.isConnected() === true, '此时视为已连接');
+
+  UI.openSyncSheet();
+  await wait(600);
+  ok($('#sheetRoot').textContent.indexOf('已连接电脑') >= 0, '面板显示「已连接电脑」');
+  ok($('#sheetRoot').textContent.indexOf('访问口令') < 0, '已连接时默认不再显示口令输入框');
+  ok($('#sheetRoot').textContent.indexOf('重新连接') >= 0, '提供「重新连接 / 更换口令」入口');
+  ok($('#sheetRoot .sheet-actions') && $('#sheetRoot .sheet-actions').textContent.indexOf('立即同步') >= 0,
+    '有「立即同步」按钮');
+  UI.closeSheet();
+  await wait(420);
+
+  Sync.config.url = syncUrlBefore;
+  Sync.config.token = syncTokenBefore;
+  delete window.AndroidApp;
+
+  /* ---------- 36. 同步失败时按钮不会卡住 ---------- */
+  window.AndroidApp = { setSyncHost: function () {} };
+  const syncUrlBefore2 = Sync.config.url;
+  const syncTokenBefore2 = Sync.config.token;
+  Sync.config.url = '10.255.255.1:9';   // 一个连不上的地址
+  Sync.config.token = 'x';
+
+  Sync._busy = true;
+  Sync._busyAt = Date.now() - 120000;    // 假装上一次同步卡了很久
+  UI.go('settings');
+  await wait(400);
+  const syncBtn = $$('#view-settings button').find((b) => b.textContent === '立即同步');
+  ok(!!syncBtn, '设置页有「立即同步」按钮');
+  if (syncBtn) {
+    syncBtn.click();
+    await wait(1500);
+    const after = $$('#view-settings button').find((b) => b.textContent.indexOf('同步') >= 0);
+    ok(!!after && after.textContent === '立即同步',
+      '过期的同步锁会被自动释放，按钮不会卡在「同步中」：' + (after ? after.textContent : '-'));
+    ok(after && after.disabled === false, '按钮恢复为可点击状态');
+  }
+  Sync._busy = false;
+  Sync.config.url = syncUrlBefore2;
+  Sync.config.token = syncTokenBefore2;
+  delete window.AndroidApp;
+  await wait(300);
+
+  /* ---------- 37. 备份记录的按钮是「调用」 ---------- */
+  await Backup.run(true);
+  UI.go('settings');
+  await wait(400);
+  UI.openBackupSheet();
+  await wait(800);
+  const bkBtns = $$('#sheetRoot .cat-row button').map((b) => b.textContent);
+  ok(bkBtns.indexOf('调用') >= 0, '备份记录里的按钮文字是「调用」：' + JSON.stringify(bkBtns));
+  ok(bkBtns.indexOf('还原') < 0, '不再有「还原」按钮');
+  UI.closeSheet();
+  await wait(420);
+  await Backup.clearAll();
+
   UI.go('home');
   await wait(250);
 

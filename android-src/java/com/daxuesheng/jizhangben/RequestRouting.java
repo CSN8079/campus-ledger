@@ -21,10 +21,33 @@ final class RequestRouting {
 
     private RequestRouting() { }
 
+    /** 用户在「与电脑同步」里填的电脑地址，精确放行 */
+    private static volatile String allowedHost = "";
+
+    static void setAllowedHost(String h) {
+        allowedHost = (h == null) ? "" : h.trim();
+    }
+
+    static String getAllowedHost() {
+        return allowedHost;
+    }
+
     /** 决定一个请求该怎么处理。host 为请求的主机名。 */
     static int routeFor(String host) {
+        return routeFor(host, allowedHost);
+    }
+
+    /**
+     * 同上，但由调用方显式指定「用户填的电脑地址」，便于单元测试。
+     *
+     * 为什么要单独放行它：常见私有网段是 10. / 192.168. / 172.16-31.，
+     * 但校园网等环境可能给电脑分配其它网段的地址，
+     * 只按网段判断会把用户自己的电脑也拦掉，表现为「同步失败」。
+     */
+    static int routeFor(String host, String allowed) {
         if (host == null || host.length() == 0) return ROUTE_BLOCK;
         if (HOST.equals(host)) return ROUTE_ASSETS;
+        if (allowed != null && allowed.length() > 0 && allowed.equals(host)) return ROUTE_PASSTHROUGH;
         if (isPrivateHost(host)) return ROUTE_PASSTHROUGH;
         return ROUTE_BLOCK;
     }

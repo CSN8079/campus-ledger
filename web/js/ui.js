@@ -879,16 +879,32 @@
         U.el('button', {
           class: 'btn btn-sm btn-primary', text: '立即同步',
           onclick: async (e) => {
-            e.target.disabled = true;
-            e.target.textContent = '同步中…';
-            try { await Sync.sync({ toast: true }); }
-            catch (err) { UI.toast('同步失败：' + err.message, 'err'); }
-            e.target.disabled = false;
-            e.target.textContent = '立即同步';
-            UI.renderSettings();
+            const btn = e.target;
+            if (btn.disabled) return;
+            btn.disabled = true;
+            btn.textContent = '同步中…';
+            // 按钮上直接显示百分比，点完就能看到做到哪一步了
+            const tick = setInterval(function () {
+              if (!btn.isConnected) return;
+              btn.textContent = Sync.progress.running
+                ? '同步中 ' + Sync.progress.percent + '%'
+                : '同步中…';
+            }, 200);
+            try {
+              const r = await Sync.sync();
+              if (r) UI.toast('同步完成：上传 ' + r.pushed + ' 项，下载 ' + r.pulled + ' 项', 'ok');
+              else UI.toast('同步正在进行中，请稍候', '');
+            } catch (err) {
+              UI.toast('同步失败：' + err.message, 'err');
+            } finally {
+              // 不管成功还是失败都要恢复按钮，绝不留在「同步中」点不动
+              clearInterval(tick);
+              if (btn.isConnected) { btn.disabled = false; btn.textContent = '立即同步'; }
+              UI.renderSettings();
+            }
           }
         }),
-        U.el('button', { class: 'btn btn-sm', text: '同步设置', onclick: () => UI.openSyncSheet() })
+        U.el('button', { class: 'btn btn-sm', text: '同步设置 / 看进度', onclick: () => UI.openSyncSheet() })
       ]));
       view.appendChild(syncCard);
     }
@@ -1964,12 +1980,29 @@
     let pwd = '';
     let autoSync = !!Sync.config.autoSync;
     let deviceName = Sync.config.deviceName || Sync.guessDeviceName();
+    let showConn = !Sync.isConnected();   // 已经连上就不展开表单
+    let testing = false;
+    let note = '';
+    let noteKind = '';
 
-    const status = U.el('div', { class: 'sheet-note' });
-    function say(msg, kind) {
-      status.textContent = msg || '';
-      status.style.color = kind === 'err' ? 'var(--expense)' : (kind === 'ok' ? 'var(--income)' : '');
+    /* ---------------- 状态判定 ---------------- */
+    function statusInfo() {
+      if (!Sync.available()) {
+        return { t: '未配置', cls: 'muted', d: isApp ? '还没有填写电脑地址' : '当前页面不是通过电脑上的服务打开的' };
+      }
+      if (Sync.progress.running) return { t: '正在同步', cls: 'busy', d: Sync.progress.step };
+      if (Sync.status === 'auth') return { t: '需要口令', cls: 'warn', d: '口令已失效，请重新输入' };
+      if (Sync.status === 'error') return { t: '上次同步失败', cls: 'err', d: Sync.message };
+      if (Sync.config.lastSyncAt) return { t: '已连接电脑', cls: 'ok', d: '上次同步：' + Sync.lastSyncText() };
+      if (Sync.isConnected()) return { t: '已连接电脑', cls: 'ok', d: '还没有同步过' };
+      return { t: '未连接', cls: 'muted', d: '请填写电脑地址和访问口令' };
     }
+
+    /* ---------------- 元素 ---------------- */
+    const statusBox = U.el('div');
+    const connBox = U.el('div');
+    const noteBox = U.el('div', { class: 'sheet-note' });
+    const btnRow = U.el('div', { class: 'sheet-actions' });
 
     const urlInput = U.el('input', {
       class: 'input', placeholder: '例如 192.168.1.7:8788', value: url, autocomplete: 'off',
@@ -1992,18 +2025,154 @@
       Sync.config.deviceName = deviceName.trim() || Sync.guessDeviceName();
       Sync.config.autoSync = autoSync;
       Sync.save();
+      if (Sync.syncHostToNative) Sync.syncHostToNative();
     }
 
+    /* ---------------- 渲染 ---------------- */
+    function say(msg, kind) { note = msg || ''; noteKind = kind || ''; renderNote(); }
+
+    function renderNote() {
+      noteBox.textContent = note || '';
+      noteBox.style.color = noteKind === 'err' ? 'var(--expense)' : (noteKind === 'ok' ? 'var(--income)' : '');
+    }
+
+    function renderStatus() {
+      U.clear(statusBox);
+      const st = statusInfo();
+      const p = Sync.progress;
+
+      statusBox.appendChild(U.el('div', { class: 'sync-status ' + st.cls }, [
+        U.el('div', { class: 'ss-head' }, [
+          U.el('span', { class: 'ss-dot' }),
+          U.el('span', { class: 'ss-title', text: st.t }),
+          U.el('span', { class: 'ss-time', text: Sync.config.lastSyncAt ? Sync.lastSyncText() : '' })
+        ]),
+        st.d ? U.el('div', { class: 'ss-desc', text: st.d }) : null
+      ]));
+
+      /* 进度条：同步过程中实时更新 */
+      if (p.running || (p.percent === 100 && p.step)) {
+        statusBox.appendChild(U.el('div', { class: 'sync-progress' }, [
+          U.el('div', { class: 'sp-track' }, [
+            U.el('div', { class: 'sp-fill', style: { width: p.percent + '%' } })
+          ]),
+          U.el('div', { class: 'sp-row' }, [
+            U.el('span', { class: 'sp-pct', text: p.percent + '%' }),
+            U.el('span', { class: 'sp-step', text: p.step })
+          ]),
+          p.detail ? U.el('div', { class: 'sp-detail', text: p.detail }) : null
+        ]));
+      }
+
+      const lr = Sync.config.lastResult;
+      if (lr && Sync.config.lastSyncAt) {
+        statusBox.appendChild(U.el('div', { class: 'ss-result', text:
+          '上传 ' + lr.pushed + ' 项　下载 ' + lr.pulled + ' 项　删除 ' + lr.removed +
+          ' 项　电脑上共 ' + lr.serverTotal + ' 条' }));
+      }
+
+      statusBox.appendChild(U.el('div', { class: 'ss-meta', text:
+        '本机名称：' + deviceName + (isApp ? '　电脑地址：' + (Sync.config.url || '未填写') : '') }));
+
+      renderButtons();
+    }
+
+    function busy() { return Sync.progress.running || testing; }
+
+    function renderButtons() {
+      U.clear(btnRow);
+      if (isApp) {
+        btnRow.appendChild(U.el('button', {
+          class: 'btn', text: testing ? '测试中…' : '测试连接', disabled: busy(),
+          onclick: () => doTest()
+        }));
+      }
+      btnRow.appendChild(U.el('button', {
+        class: 'btn btn-primary', text: Sync.progress.running ? '同步中…' : '立即同步',
+        disabled: busy(), onclick: () => doSync()
+      }));
+      btnRow.appendChild(U.el('button', { class: 'btn', text: '关闭', onclick: () => UI.closeSheet() }));
+    }
+
+    let connRendered = null;
+    function renderConn() {
+      if (connRendered === showConn) return;   // 状态没变就不重建，避免打断输入
+      connRendered = showConn;
+      U.clear(connBox);
+      if (!isApp) return;
+
+      if (!showConn) {
+        connBox.appendChild(U.el('button', {
+          class: 'btn btn-sm btn-block', style: { marginBottom: '12px' },
+          text: '重新连接 / 更换口令',
+          onclick: () => { showConn = true; renderConn(); }
+        }));
+        return;
+      }
+
+      const card = U.el('div', { class: 'card tight', style: { marginBottom: '12px' } });
+      card.appendChild(U.el('div', { class: 'field' }, [U.el('label', { text: '电脑地址' }), urlInput]));
+      card.appendChild(U.el('div', { class: 'field' }, [
+        U.el('label', { text: '访问口令' + (Sync.config.token ? '（已记住，留空即可）' : '') }),
+        pwdInput
+      ]));
+      if (Sync.config.token) {
+        card.appendChild(U.el('div', { class: 'sheet-note', style: { margin: '0' },
+          text: '这台设备已经记住口令了，平时不用再输；只有换了电脑或改了口令时才需要重新填。' }));
+      }
+      connBox.appendChild(card);
+    }
+
+    function refresh() { renderStatus(); renderNote(); renderConn(); }
+    function rerenderConn() { connRendered = null; renderConn(); }
+
+    /* ---------------- 操作 ---------------- */
+    async function doTest() {
+      if (!url.trim()) { say('请先填写电脑地址', 'err'); return; }
+      commitConfig();
+      testing = true; say('正在测试连接…'); renderStatus();
+      try {
+        if (pwd) { await Sync.login(pwd); pwd = ''; pwdInput.value = ''; }
+        const info = await Sync.test();
+        say('连接成功：电脑上已有 ' + info.txCount + ' 条账目（' + info.app + '）', 'ok');
+        showConn = !Sync.isConnected();
+        rerenderConn();
+      } catch (e) {
+        say('连接失败：' + e.message, 'err');
+        showConn = true; rerenderConn();
+      } finally {
+        testing = false; renderStatus();
+      }
+    }
+
+    async function doSync() {
+      if (isApp && !url.trim()) { say('请先填写电脑地址', 'err'); showConn = true; rerenderConn(); return; }
+      commitConfig();
+      say('');
+      try {
+        if (isApp && pwd) { await Sync.login(pwd); pwd = ''; pwdInput.value = ''; }
+        const r = await Sync.sync();
+        if (!r) { say('同步正在进行中，请稍候…'); return; }
+        say('同步完成：上传 ' + r.pushed + ' 项，下载 ' + r.pulled + ' 项', 'ok');
+        showConn = !Sync.isConnected();
+        rerenderConn();
+      } catch (e) {
+        say('同步失败：' + e.message, 'err');
+      } finally {
+        renderStatus();
+      }
+    }
+
+    /* ---------------- 组装 ---------------- */
     const body = U.el('div');
     body.appendChild(U.el('p', { style: { fontSize: '12.5px', color: 'var(--text-soft)', lineHeight: '1.85', margin: '0 0 12px' }, html: isApp
-      ? '在电脑上运行 <b>启动记账本.bat</b>，窗口里会显示一个「手机地址」和一个 6 位口令。把地址和口令填到下面，手机就能直接和电脑同步数据，不用再开浏览器。'
+      ? '在电脑上运行 <b>启动记账本.bat</b>，窗口里会显示一个「手机地址」和一个 6 位口令。填一次之后就不用再填了。'
       : '当前页面就是电脑上的服务提供的，可以直接同步。' }));
 
-    if (isApp) {
-      body.appendChild(U.el('div', { class: 'field' }, [U.el('label', { text: '电脑地址' }), urlInput]));
-      body.appendChild(U.el('div', { class: 'field' }, [U.el('label', { text: '访问口令' }), pwdInput]));
-    }
-    body.appendChild(U.el('div', { class: 'field' }, [U.el('label', { text: '本机名称（用来区分是哪台设备）' }), nameInput]));
+    body.appendChild(statusBox);
+    body.appendChild(connBox);
+    body.appendChild(U.el('div', { class: 'section-label', text: '本机' }));
+    body.appendChild(U.el('div', { class: 'field' }, [nameInput]));
     body.appendChild(U.el('div', { class: 'switch-row' }, [
       U.el('div', { class: 'sr-body' }, [
         U.el('div', { class: 'sr-title', text: '自动同步' }),
@@ -2019,67 +2188,21 @@
         '・删除也会同步过去，被删掉的账目不会从另一台设备跑回来<br>' +
         '・同一时刻两边都改了同一条时，保留后改的那一份'
     }));
-    body.appendChild(status);
+    body.appendChild(noteBox);
+    body.appendChild(btnRow);
 
-    const actions = [];
-    if (isApp) {
-      actions.push({
-        label: '测试连接',
-        onClick: async () => {
-          if (!url.trim()) { say('请先填写电脑地址', 'err'); return; }
-          commitConfig();
-          say('正在连接…');
-          try {
-            if (pwd) await Sync.login(pwd);
-            const info = await Sync.test();
-            say('连接成功：电脑上已有 ' + info.txCount + ' 条账目（' + info.app + '）', 'ok');
-          } catch (e) {
-            say('连接失败：' + e.message, 'err');
-          }
-        }
-      });
-    }
-    actions.push({
-      label: '连接并同步', primary: true,
-      onClick: async () => {
-        if (isApp && !url.trim()) { say('请先填写电脑地址', 'err'); return; }
-        commitConfig();
-        say('正在同步…');
-        try {
-          if (isApp && pwd) await Sync.login(pwd);
-          const r = await Sync.sync();
-          say('同步完成：上传 ' + r.pushed + ' 项，下载 ' + r.pulled + ' 项，电脑上共 ' + r.serverTotal + ' 条', 'ok');
-          setTimeout(() => UI.renderSettings(), 100);
-        } catch (e) {
-          say('同步失败：' + e.message, 'err');
-        }
-      }
-    });
-    if (isApp && Sync.config.url) {
-      actions.push({
-        label: '断开', danger: true,
-        onClick: () => {
-          Sync.config.url = '';
-          Sync.config.token = '';
-          Sync.config.lastSyncAt = 0;
-          Sync.config.lastResult = null;
-          Sync.save();
-          UI.closeSheet();
-          UI.renderSettings();
-          UI.toast('已断开与电脑的连接');
-        }
-      });
-    }
-    actions.push({ label: '关闭', onClick: () => UI.closeSheet() });
+    refresh();
+
+    /* 同步过程中的进度会通过这里实时刷新 */
+    const unsub = Sync.subscribe(() => { renderStatus(); });
 
     UI.openSheet({
       title: '与电脑同步',
       body: body,
-      actions: actions,
-      note: '同步只在你自己的设备之间进行：手机把数据发到电脑上运行的服务，电脑再合并回一份完整数据。'
+      onClose: () => { if (unsub) unsub(); },
+      note: '同步只在你自己的电脑和手机之间进行，数据不会经过任何第三方服务器。'
     });
   };
-
   global.UI = UI;
 })(window);
 /* ============================================================
@@ -2230,10 +2353,10 @@
           ]),
           U.el('div', { class: 'ops' }, [
             U.el('button', {
-              class: 'btn btn-sm', text: '还原',
+              class: 'btn btn-sm', text: '调用',
               onclick: async function () {
                 const ok = await UI.confirm({
-                  title: '还原这份备份',
+                  title: '调用这份备份',
                   message: '将用 ' + Backup.timeText(item.at) + ' 的快照覆盖当前全部账目。' +
                     '系统会先自动备份一份当前数据，所以不用怕点错。',
                   okText: '还原', danger: true

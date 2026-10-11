@@ -225,6 +225,12 @@ public class MainActivity extends Activity {
 
     public class Saver {
 
+        /** 网页把用户填的电脑地址告诉原生，请求路由会精确放行它 */
+        @JavascriptInterface
+        public void setSyncHost(String host) {
+            RequestRouting.setAllowedHost(host);
+        }
+
         /** 网页切换深色/浅色时告诉原生，好调整系统栏图标的颜色 */
         @JavascriptInterface
         public void setDark(final boolean dark) {

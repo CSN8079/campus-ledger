@@ -439,6 +439,43 @@ a { color: var(--primary); }
 .toast.err { background: rgba(229, 72, 77, .95); }
 @keyframes toastIn { from { opacity: 0; transform: translateY(10px); } to { opacity: 1; transform: none; } }
 
+/* ---------- 同步状态与进度 ---------- */
+.sync-status {
+  border: 1px solid var(--line); border-radius: var(--radius-sm);
+  padding: 11px 13px; background: var(--bg-elev); margin-bottom: 10px;
+}
+.sync-status .ss-head { display: flex; align-items: center; gap: 8px; }
+.sync-status .ss-dot { width: 9px; height: 9px; border-radius: 50%; flex: 0 0 9px; background: var(--text-faint); }
+.sync-status .ss-title { font-size: 14px; font-weight: 700; }
+.sync-status .ss-time { margin-left: auto; font-size: 11px; color: var(--text-faint); }
+.sync-status .ss-desc { font-size: 12px; color: var(--text-soft); margin-top: 5px; line-height: 1.7; }
+.sync-status.ok { border-color: color-mix(in srgb, var(--income) 45%, var(--line)); }
+.sync-status.ok .ss-dot, .sync-status.ok .ss-title { background: var(--income); }
+.sync-status.ok .ss-title { background: none; color: var(--income); }
+.sync-status.warn .ss-dot { background: var(--warn); }
+.sync-status.warn .ss-title { color: var(--warn); }
+.sync-status.err { border-color: color-mix(in srgb, var(--expense) 45%, var(--line)); }
+.sync-status.err .ss-dot { background: var(--expense); }
+.sync-status.err .ss-title { color: var(--expense); }
+.sync-status.busy { border-color: color-mix(in srgb, var(--primary) 45%, var(--line)); }
+.sync-status.busy .ss-dot { background: var(--primary); animation: syncPulse 1s ease-in-out infinite; }
+.sync-status.busy .ss-title { color: var(--primary); }
+@keyframes syncPulse { 0%, 100% { opacity: 1; } 50% { opacity: .25; } }
+
+.sync-progress { margin-bottom: 10px; }
+.sync-progress .sp-track { height: 8px; border-radius: 999px; background: var(--bg-sunken); overflow: hidden; }
+.sync-progress .sp-fill {
+  height: 100%; border-radius: 999px;
+  background: linear-gradient(90deg, var(--primary), #7c6cff);
+  transition: width .3s ease;
+}
+.sync-progress .sp-row { display: flex; align-items: baseline; gap: 8px; margin-top: 7px; font-size: 12px; }
+.sync-progress .sp-pct { font-variant-numeric: tabular-nums; font-weight: 700; color: var(--primary); }
+.sync-progress .sp-step { color: var(--text-soft); }
+.sync-progress .sp-detail { font-size: 11.5px; color: var(--text-faint); margin-top: 3px; }
+.ss-result { font-size: 12px; color: var(--text-soft); margin-top: 7px; font-variant-numeric: tabular-nums; }
+.ss-meta { font-size: 11.5px; color: var(--text-faint); margin-top: 5px; }
+
 /* ---------- 清理数据面板 ---------- */
 .clear-row {
   display: flex; align-items: flex-start; justify-content: space-between; gap: 12px;
