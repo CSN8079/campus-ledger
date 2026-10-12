@@ -79,6 +79,82 @@
       '　界面真正留出的空白：上' + num('--safe-t') + ' 下' + num('--safe-b');
   };
 
+  /* ---------------- 键盘遮挡 ----------------
+     手机上点输入框时键盘会盖住下半屏。这里做两件事：
+       1. 把键盘高度写进 --kb，弹层整体上移，不会被键盘压住；
+       2. 把正在输入的框（连同下面的历史联想列表）滚到键盘上方，
+          这样打字时能看见自己打了什么。
+     两个来源取较大值：
+       - 安卓外壳直接报过来的键盘高度（--ime-px，最准）；
+       - 网页自己用 visualViewport 算出来的（浏览器里靠这个）。
+     窗口本身被键盘顶小的情况（电脑浏览器、部分系统）两者都会是 0，
+     此时弹层本来就贴着键盘上方，不用额外处理。 */
+  UI.keyboardHeight = function () {
+    let guess = 0;
+    const vv = global.visualViewport;
+    if (vv && global.innerHeight) {
+      const gap = global.innerHeight - (vv.height + vv.offsetTop);
+      if (gap > 90) guess = Math.round(gap);   // 小于 90 的当作地址栏伸缩之类的抖动
+    }
+    return Math.max(guess, UI.nativeIme || 0);
+  };
+
+  function applyKeyboardHeight(extra) {
+    const kb = UI.keyboardHeight();
+    const root = document.documentElement;
+    root.style.setProperty('--kb', kb + 'px');
+    root.classList.toggle('kb-open', kb > 0);
+    if (kb > 0) setTimeout(UI.nudgeActiveInput, extra || 0);
+  }
+  UI.applyKeyboardHeight = applyKeyboardHeight;
+
+  /* 安卓外壳把键盘高度直接报过来，比自己猜准 */
+  UI.onNativeIme = function (px) {
+    UI.nativeIme = Number(px) || 0;
+    applyKeyboardHeight(30);
+  };
+
+  /* 把正在输入的控件滚到弹层可视区里（联想列表一起算进去） */
+  UI.nudgeActiveInput = function () {
+    const el = document.activeElement;
+    if (!el || !el.closest) return;
+    const scroller = el.closest('.sheet');
+    if (!scroller) return;
+
+    const box = scroller.getBoundingClientRect();
+    const r = el.getBoundingClientRect();
+    const pad = 16;
+
+    /* 历史联想的候选列表也要一起露出来，否则等于白给 */
+    const wrap = el.closest('.ac-wrap');
+    const list = wrap ? wrap.querySelector('.ac-list') : null;
+    let bottom = r.bottom;
+    if (list && list.offsetHeight) bottom = Math.max(bottom, list.getBoundingClientRect().bottom);
+
+    let delta = 0;
+    if (bottom > box.bottom - pad) delta = bottom - (box.bottom - pad);
+    else if (r.top < box.top + pad) delta = r.top - (box.top + pad);
+    if (delta) scroller.scrollTop += delta;
+  };
+
+  UI.setupKeyboard = function () {
+    const vv = global.visualViewport;
+    if (vv) {
+      vv.addEventListener('resize', function () { applyKeyboardHeight(); });
+      vv.addEventListener('scroll', function () { applyKeyboardHeight(); });
+    }
+    global.addEventListener('resize', function () { applyKeyboardHeight(); });
+    global.addEventListener('orientationchange', function () { setTimeout(function () { applyKeyboardHeight(); }, 260); });
+
+    /* 键盘是动画弹出来的，多补几次才滚得准 */
+    document.addEventListener('focusin', function () {
+      [60, 200, 380].forEach(function (ms) {
+        setTimeout(function () { applyKeyboardHeight(); UI.nudgeActiveInput(); }, ms);
+      });
+    });
+    document.addEventListener('focusout', function () { setTimeout(function () { applyKeyboardHeight(); }, 160); });
+  };
+
   /* ---------------- 路由 ---------------- */
   UI.go = function (tab) {
     UI.state.tab = tab;
@@ -179,6 +255,7 @@
     if (global.visualViewport) global.visualViewport.addEventListener('resize', () => UI.applySafeArea());
     UI.state.list.hideExcluded = !!Store.settings.hideExcludedInList;
     wire();
+    UI.setupKeyboard();
 
     Store.subscribe((reason) => {
       refreshDebounced();

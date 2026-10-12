@@ -18,7 +18,9 @@
   const WEEK = ['日', '一', '二', '三', '四', '五', '六'];
   const MONTH_CN = ['一月', '二月', '三月', '四月', '五月', '六月',
     '七月', '八月', '九月', '十月', '十一月', '十二月'];
-  const MINUTES = [0, 5, 10, 15, 20, 25, 30, 35, 40, 45, 50, 55];
+  /* 分钟给全 0-59，这样时间能精确到 1 分钟（以前是 5 分钟一档） */
+  const MINUTES = [];
+  for (let i = 0; i < 60; i++) MINUTES.push(i);
 
   function pad2(n) { return (n < 10 ? '0' : '') + n; }
   function daysInMonth(y, m) { return new Date(y, m, 0).getDate(); }
@@ -239,7 +241,7 @@
       box.appendChild(hourGrid);
 
       box.appendChild(U.el('div', { class: 'dp-time-label', text: '分' }));
-      const minGrid = U.el('div', { class: 'dp-time-grid' });
+      const minGrid = U.el('div', { class: 'dp-time-grid min' });
       const minutes = MINUTES.slice();
       if (minutes.indexOf(state.mm) < 0) minutes.push(state.mm);
       minutes.sort((a, b) => a - b);
@@ -253,22 +255,35 @@
       return box;
     }
 
+    /* 重画时必须保住滚动位置。
+       之前是「先清空再重建」，清空的一瞬间面板变矮、滚动位置被强行归零，
+       于是点一下分钟，整个面板就跳回最上面。 */
     function render() {
-      U.clear(container);
+      const sheetEl = container.parentNode;          // .sheet 才是滚动容器
+      const keep = sheetEl ? sheetEl.scrollTop : 0;
+
+      const next = document.createDocumentFragment();
       if (mode === 'month') {
-        container.appendChild(monthView(false));
-        return;
+        next.appendChild(monthView(false));
+      } else {
+        next.appendChild(quickBar());
+        const cal = U.el('div', { class: 'dp-calendar' });
+        cal.appendChild(navBar(() => { mode = 'month'; render(); }));
+        cal.appendChild(calendarView());
+        next.appendChild(cal);
+        next.appendChild(timeView());
+        next.appendChild(U.el('div', { class: 'dp-preview' }, [
+          U.el('span', { text: '已选：' }),
+          U.el('b', { text: UI.fmtDateLabel(toValue(state, withTime), withTime) })
+        ]));
       }
-      container.appendChild(quickBar());
-      const cal = U.el('div', { class: 'dp-calendar' });
-      cal.appendChild(navBar(() => { mode = 'month'; render(); }));
-      cal.appendChild(calendarView());
-      container.appendChild(cal);
-      container.appendChild(timeView());
-      container.appendChild(U.el('div', { class: 'dp-preview' }, [
-        U.el('span', { text: '已选：' }),
-        U.el('b', { text: UI.fmtDateLabel(toValue(state, withTime), withTime) })
-      ]));
+
+      U.clear(container);
+      container.appendChild(next);
+      if (sheetEl && keep) {
+        sheetEl.scrollTop = keep;
+        requestAnimationFrame(function () { sheetEl.scrollTop = keep; });
+      }
     }
 
     render();

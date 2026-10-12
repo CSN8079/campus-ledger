@@ -16,6 +16,7 @@
 
   const U = global.U, Store = global.Store, Stats = global.Stats;
   const LS_KEY = 'jzb:ai';
+  const WEEK_CN = ['周日', '周一', '周二', '周三', '周四', '周五', '周六'];
 
   const AI = {
     config: {
@@ -72,8 +73,11 @@
   };
 
   /* ---------------- 数据摘要 ----------------
-     把「有哪些分类、来源、用途」压缩成一段文字喂给模型，
-     这样它才能准确理解「杭州深度求索」「其他」这类说法。 */
+     把账目喂给模型，让它能真正「看见」数据：
+       1. 有哪些分类、来源、用途（理解「杭州深度求索」这类说法）
+       2. 各周期的收入/支出/结余（应用自己算的，绝对准确）
+       3. 逐笔明细，含金额、时间、分类、来源、用途
+     这样它才能回答「这周花了多少」，也才能定位「最近的一笔」。 */
   AI.buildDigest = function (maxNames) {
     const limit = maxNames || 40;
     const tx = Store.tx;
@@ -106,19 +110,61 @@
     const times = tx.map(function (t) { return t.time; }).sort(function (a, b) { return a - b; });
     const range = times.length ? (U.toISODate(new Date(times[0])) + ' ~ ' + U.toISODate(new Date(times[times.length - 1]))) : '（暂无账目）';
 
+    const now = new Date();
     const parts = [];
+    parts.push('今天是 ' + U.toISODate(now) + ' ' + WEEK_CN[now.getDay()] + '。');
     parts.push('账目总数：' + tx.length + ' 笔，时间范围：' + range);
     parts.push('现有分类：' + (cats.length ? cats.join('、') : '（无）'));
+
+    /* 各周期合计：这些数字是应用自己算的，直接用，不用自己加减 */
+    const sumLines = [];
+    ['today', 'week', 'lastWeek', 'month', 'lastMonth', 'semester', 'year', 'all']
+      .forEach(function (id) {
+        const r = Stats.range(id);
+        const s = Stats.full(Store.query({ from: r.from, to: r.to, includeExcluded: true, includeHidden: false }));
+        sumLines.push('  ' + r.label + '：收入 ' + U.fmtMoney(s.included.income) +
+          '，支出 ' + U.fmtMoney(s.included.expense) +
+          '，结余 ' + U.fmtMoney(s.included.net) +
+          '（' + s.included.count + ' 笔计入统计' +
+          (s.excluded.count ? '，另有 ' + s.excluded.count + ' 笔不计入统计' : '') + '）');
+      });
+    parts.push('【各周期合计】（已排除「不计入统计」的账目）\n' + sumLines.join('\n'));
+
     const src = byName('counterparty');
-    if (src.length) parts.push('出现最多的来源（交易对方）：\n  ' + src.map(line).join('\n  '));
+    if (src.length) parts.push('【出现最多的来源（交易对方）】\n  ' + src.map(line).join('\n  '));
     const items = byName('item');
-    if (items.length) parts.push('出现最多的用途：\n  ' + items.map(line).join('\n  '));
+    if (items.length) parts.push('【出现最多的用途】\n  ' + items.map(line).join('\n  '));
+
+    /* 逐笔明细：让 AI 能自己算任意区间、能精确定位某一笔 */
+    const all = tx.slice().sort(function (a, b) {
+      return (b.time - a.time) || (b.createdAt - a.createdAt);
+    });
+    const cap = 300;
+    if (!all.length) {
+      parts.push('【账目明细】（当前没有任何账目）');
+    } else {
+      parts.push('【账目明细（从新到旧）】共 ' + all.length + ' 笔' +
+        (all.length > cap ? '，下面只列最近 ' + cap + ' 笔' : '') + '：');
+      parts.push(all.slice(0, cap).map(function (t, i) {
+        return (i + 1) + '. ' + U.fmtDateTime(new Date(t.time)) +
+          ' ' + (t.type === 'income' ? '收入' : '支出') + ' ' + U.fmtMoney(t.amount) +
+          ' 分类=' + (t.categoryName || '未分类') +
+          ' 来源=' + (t.counterparty || '—') +
+          ' 用途=' + (t.item || '—') +
+          (t.account ? ' 账户=' + t.account : '') +
+          (t.excludeStat ? '［不计入统计' + (t.excludeReason ? '：' + t.excludeReason : '') + '］' : '') +
+          (t.hidden ? '［已隐藏］' : '');
+      }).join('\n'));
+      parts.push('上面第 1 条就是「最近的一笔」。用户说「最近的一笔」「刚刚那笔」时指的就是它。');
+    }
     return parts.join('\n');
   };
 
   /* ---------------- 系统提示词 ---------------- */
   const SYSTEM_PROMPT = [
-    '你是一个记账应用的整理助手。用户会用自然语言让你批量整理账目，或者问你账目情况。',
+    '你是一个记账应用的整理助手。你能看到用户的全部账目明细（含金额、时间、分类、来源、用途），',
+    '也能看到应用算好的各周期合计，所以「这周花了多少」「总收入多少」这类问题要直接回答，',
+    '绝不要说「我看不到金额」「我无法定位某一笔」。用户还会让你批量整理账目。',
     '',
     '【字段说明】',
     '- 每笔账目有：类型（收入/支出）、金额、时间、分类、账户、来源、用途、备注',
@@ -143,6 +189,15 @@
     '- txType：expense 或 income',
     '- account：账户名',
     '- from / to：YYYY-MM-DD',
+    '- latest / limit：只要最近的一笔 / 最近 N 笔（用户说「最近的一笔」时用 latest: 1）',
+    '',
+    '【动作 4：算合计】（不用用户确认，应用会立刻精确算好）',
+    '   { "type": "sum", "filter": { "from": "2026-10-05", "to": "2026-10-11" } }',
+    '   概况里已有的周期合计直接用，不要重复调用；只有用户问的区间/条件概况里没有时才用它。',
+    '',
+    '【怎么理解「最近的一笔」】',
+    '- 概况里「账目明细」的第 1 条就是最近的一笔，可以用它回答，也可以直接用 { "latest": 1 } 精确操作那一笔',
+    '- 例如「把最近的一次账目的分类改为交通」→ setCategory + { "latest": 1 }',
     '',
     '【规则】',
     '- 只输出 JSON，一个字都不要多说',
@@ -292,13 +347,23 @@
       includeExcluded: true,
       includeHidden: true
     });
-    return list.filter(function (t) {
+    list = list.filter(function (t) {
       if (filter.counterparty && String(t.counterparty || '').indexOf(filter.counterparty) < 0) return false;
       if (filter.item && String(t.item || '').indexOf(filter.item) < 0) return false;
       if (filter.account && String(t.account || '') !== filter.account) return false;
       if (filter.category && String(t.categoryName || '') !== filter.category) return false;
       return true;
     });
+
+    /* 「最近的一笔 / N 笔」：先按时间从新到旧排，再截取 */
+    const n = Number(filter.latest || filter.limit || 0);
+    if (n > 0) {
+      list = list.slice().sort(function (a, b) {
+        return (b.time - a.time) || (b.createdAt - a.createdAt);
+      });
+      list = list.slice(0, Math.min(200, Math.max(1, Math.floor(n))));
+    }
+    return list;
   };
 
   AI.describeFilter = function (filter) {
@@ -312,7 +377,39 @@
     if (filter.account) bits.push('账户是「' + filter.account + '」');
     if (filter.from) bits.push('从 ' + filter.from);
     if (filter.to) bits.push('到 ' + filter.to);
+    const n = Number(filter.latest || filter.limit || 0);
+    if (n === 1) bits.push('时间最近的那一笔');
+    else if (n > 1) bits.push('时间最近的 ' + n + ' 笔');
     return bits.length ? bits.join('，') : '全部账目';
+  };
+
+  /* 一笔账目的简短说明，用来让用户看清「到底改的是哪一笔」 */
+  AI.txLabel = function (t) {
+    return U.fmtDateTime(new Date(t.time)) + '　' + (t.counterparty || t.item || '无来源') +
+      '　' + (t.type === 'income' ? '收入' : '支出') + ' ' + U.fmtMoney(t.amount);
+  };
+
+  /* 精确合计：应用自己算，绝不交给模型心算 */
+  AI.computeSum = function (filter) {
+    filter = filter || {};
+    const list = AI.match(filter);
+    let income = 0, expense = 0, excluded = 0;
+    list.forEach(function (t) {
+      if (t.excludeStat) { excluded++; return; }
+      if (t.type === 'income') income += t.amount; else expense += t.amount;
+    });
+    income = U.round2(income); expense = U.round2(expense);
+    return {
+      count: list.length,
+      income: income,
+      expense: expense,
+      balance: U.round2(income - expense),
+      text: AI.describeFilter(filter) + '：收入 ' + U.fmtMoney(income) +
+        '，支出 ' + U.fmtMoney(expense) +
+        '，结余 ' + U.fmtMoney(U.round2(income - expense)) +
+        '（共 ' + list.length + ' 笔' +
+        (excluded ? '，其中 ' + excluded + ' 笔不计入统计' : '') + '）'
+    };
   };
 
   /* 把 AI 给的动作翻译成「能做什么、会影响几条」，等人确认 */
@@ -334,7 +431,7 @@
           desc: AI.describeFilter(a.filter),
           count: list.length,
           reason: list.length ? '' : '没有账目符合条件',
-          sample: list.slice(0, 3).map(function (t) { return (t.counterparty || t.item || '—') + ' ' + U.fmtMoney(t.amount); }),
+          sample: list.slice(0, 3).map(function (t) { return AI.txLabel(t); }),
           run: async function () {
             const n = await Store.reassignCategory(list.map(function (t) { return t.id; }), cat.id);
             return '已把 ' + n + ' 条账目的分类改成「' + cat.name + '」';
@@ -353,7 +450,7 @@
           desc: AI.describeFilter(a.filter),
           count: list.length,
           reason: list.length ? '' : '没有账目符合条件',
-          sample: list.slice(0, 3).map(function (t) { return (t.counterparty || t.item || '—') + ' ' + U.fmtMoney(t.amount); }),
+          sample: list.slice(0, 3).map(function (t) { return AI.txLabel(t); }),
           run: async function () {
             let n = 0;
             for (let i = 0; i < list.length; i++) {
@@ -432,8 +529,36 @@
         .concat(history);
 
       const raw = await callModel(messages);
-      const parsed = AI.parseIntent(raw);
+      let parsed = AI.parseIntent(raw);
       AI.messages.push({ role: 'assistant', content: raw });
+
+      /* 需要精确数字的：应用自己算，再把结果交回模型，由它用自然语言总结 */
+      const sums = (parsed.actions || []).filter(function (a) { return a.type === 'sum'; });
+      const rest = (parsed.actions || []).filter(function (a) { return a.type !== 'sum'; });
+      if (sums.length) {
+        const results = sums.map(function (a) { return AI.computeSum(a.filter || a); });
+        parsed = { reply: parsed.reply, actions: rest, sums: results };
+        try {
+          const back = '（应用已经按你的要求把数字精确算好了，结果如下。请直接用中文简洁地把结果告诉用户，'
+            + '不要再调用 sum）\n' + results.map(function (r) { return r.text; }).join('\n');
+          const again = [{ role: 'system', content: SYSTEM_PROMPT }]
+            .concat([{ role: 'system', content: '【当前账目概况】\n' + AI.buildDigest() }])
+            .concat(AI.messages.slice(-8))
+            .concat([{ role: 'user', content: back }]);
+          const raw2 = await callModel(again);
+          const parsed2 = AI.parseIntent(raw2);
+          AI.messages.push({ role: 'assistant', content: raw2 });
+          parsed = {
+            reply: parsed2.reply || parsed.reply,
+            actions: rest.concat((parsed2.actions || []).filter(function (a) { return a.type !== 'sum'; })),
+            sums: results
+          };
+        } catch (e) {
+          /* 第二次问失败也没关系，算好的数字照样给用户看 */
+          parsed.reply = parsed.reply || '（数字已经算好，见下面）';
+        }
+      }
+
       if (AI.messages.length > 16) AI.messages = AI.messages.slice(-16);
       return parsed;
     } catch (e) {

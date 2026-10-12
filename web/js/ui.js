@@ -453,6 +453,8 @@
           U.el('span', { class: 'ac-count', text: r.count + ' 次' })
         ]));
       });
+      /* 列表一出来就把输入框和列表一起顶到键盘上方 */
+      if (UI.nudgeActiveInput) setTimeout(UI.nudgeActiveInput, 0);
     }
 
     input.addEventListener('blur', function () {
@@ -821,6 +823,8 @@
 
     function bubble(role, text) {
       logBox.appendChild(U.el('div', { class: 'ai-msg ' + role }, [U.el('div', { class: 'ai-text', text: text })]));
+      logBox.scrollTop = logBox.scrollHeight;   // 新消息直接露出来
+      if (UI.nudgeActiveInput) setTimeout(UI.nudgeActiveInput, 0);
     }
 
     function renderPending() {
@@ -880,6 +884,8 @@
         const parsed = await AI.ask(text);
         wait.remove();
         bubble('ai', parsed.reply || '（AI 没有给出说明）');
+        /* 需要精确计算的，应用自己算完直接摆出来 */
+        (parsed.sums || []).forEach(function (s) { bubble('calc', s.text); });
         resolved = AI.resolve(parsed.actions || []);
         say(resolved.length ? 'AI 想改动 ' + resolved.length + ' 项，确认之后才会生效' : '');
       } catch (e) {

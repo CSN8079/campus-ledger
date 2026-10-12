@@ -907,6 +907,152 @@
   AI.save();
   await wait(200);
 
+  /* ---------- 41. 键盘弹起时输入框不会被盖住 ---------- */
+  UI.go('list');
+  await wait(250);
+  UI.openTxSheet(null);
+  await wait(500);
+  const kbSheet = $('#sheetRoot .sheet');
+  const kbBefore = kbSheet.getBoundingClientRect().bottom;
+  const firstInput = $$('#sheetRoot .field .input')[0];
+  ok(!!firstInput, '记账表单里有可以打字的输入框');
+  firstInput.focus();
+  await wait(120);
+  UI.onNativeIme(320);          // 模拟键盘弹起 320px
+  await wait(300);
+  eq(getComputedStyle(document.documentElement).getPropertyValue('--kb').trim(), '320px', '键盘高度写进了 --kb');
+  const kbAfter = kbSheet.getBoundingClientRect().bottom;
+  ok(kbAfter <= window.innerHeight - 300,
+    '整个记账面板被抬到键盘上方（底边 ' + Math.round(kbAfter) + ' ≤ ' + (window.innerHeight - 300) + '）');
+  ok(kbAfter < kbBefore, '面板确实往上移了');
+
+  /* 最下面那个输入框（备注）打字时也必须看得见 */
+  const lastInput = $$('#sheetRoot .field .input').slice(-1)[0];
+  lastInput.focus();
+  await wait(200);
+  UI.nudgeActiveInput();
+  await wait(250);
+  const liRect = lastInput.getBoundingClientRect();
+  const shRect = kbSheet.getBoundingClientRect();
+  ok(liRect.bottom <= shRect.bottom + 2,
+    '最后一个输入框被滚进可视区（底边 ' + Math.round(liRect.bottom) + ' ≤ ' + Math.round(shRect.bottom) + '）');
+  ok(liRect.top >= shRect.top - 2, '也没有被顶出面板上沿');
+
+  /* 历史联想列表也要一起露出来 */
+  const srcIn = $$('#sheetRoot .ac-wrap input.input')[0];
+  ok(!!srcIn, '来源是一个带联想的输入框');
+  srcIn.focus();
+  srcIn.value = '校园';
+  srcIn.dispatchEvent(new Event('input', { bubbles: true }));
+  await wait(350);
+  const acList = $('#sheetRoot .ac-list');
+  ok(acList && acList.offsetHeight > 0, '联想候选列表弹了出来');
+  const acRect = acList.getBoundingClientRect();
+  const shRect2 = kbSheet.getBoundingClientRect();
+  ok(acRect.bottom <= shRect2.bottom + 2,
+    '候选列表也在键盘上方看得到（底边 ' + Math.round(acRect.bottom) + ' ≤ ' + Math.round(shRect2.bottom) + '）');
+
+  UI.onNativeIme(0);
+  await wait(250);
+  eq(getComputedStyle(document.documentElement).getPropertyValue('--kb').trim(), '0px', '键盘收起后高度归零，面板回到原位');
+  UI.closeSheet();
+  await wait(450);
+
+  /* ---------- 42. 分钟精确到 1 分钟，且选完不跳回顶部 ---------- */
+  UI.openTxSheet(null);
+  await wait(500);
+  const dateField2 = $('#sheetRoot .date-field');
+  dateField2.click();
+  await wait(500);
+  const minCells = $$('#pickerRoot .dp-time-grid.min .dp-tcell');
+  eq(minCells.length, 60, '分钟从 0 到 59 都能选，精确到 1 分钟');
+  const m07 = minCells.filter((b) => b.textContent === '07')[0];
+  ok(!!m07, '能找到「07」这个分钟');
+
+  const pkSheet = $('#pickerRoot .sheet');
+  const maxScroll = pkSheet.scrollHeight - pkSheet.clientHeight;
+  ok(maxScroll > 40, '时间面板可以滚动（可滚 ' + maxScroll + 'px）');
+  const target = Math.min(220, Math.max(0, maxScroll - 10));
+  pkSheet.scrollTop = target;
+  await wait(150);
+  const keptBefore = pkSheet.scrollTop;
+  ok(keptBefore > 0, '先把面板往下滚一点（' + keptBefore + '）');
+
+  m07.click();
+  await wait(320);
+  ok($('#pickerRoot .dp-preview').textContent.indexOf(':07') >= 0,
+    '选中的时间精确到分钟：' + $('#pickerRoot .dp-preview').textContent.trim().slice(-14));
+  eq($('#pickerRoot .sheet').scrollTop, keptBefore, '点完分钟后面板停在原地，没有跳回最上面');
+  $$('#pickerRoot .sheet-actions .btn')[1].click();   // 取消
+  await wait(400);
+  UI.closeSheet();
+  await wait(420);
+
+  /* ---------- 43. AI 真的能读到账目数据（走完整请求链路） ---------- */
+  const digestNow = AI.buildDigest();
+  ok(digestNow.indexOf('各周期合计') >= 0, '喂给 AI 的数据里带各周期合计');
+  ok(digestNow.indexOf('账目明细') >= 0 && /\d+\.\d\d/.test(digestNow), '喂给 AI 的数据里有带金额的逐笔明细');
+  ok(digestNow.indexOf('最近的一笔') >= 0, '明确告诉 AI 哪一笔是最近的');
+
+  const newestTx = Store.tx.slice().sort((a, b) => (b.time - a.time) || (b.createdAt - a.createdAt))[0];
+  const latestHit = AI.match({ latest: 1 });
+  eq(latestHit.length, 1, '「最近的一笔」能精确定位');
+  eq(latestHit[0].id, newestTx.id, '定位到的就是时间最近的那一笔');
+  const sumCheck = AI.computeSum({});
+  const expCheck = Stats.summarize(Store.tx.filter((t) => !t.excludeStat));
+  eq(sumCheck.expense, expCheck.expense, '应用自己算的支出合计和统计模块完全一致');
+  ok(sumCheck.text.indexOf('结余') >= 0, '结果里写清了结余：' + sumCheck.text);
+
+  /* 用假的「系统请求」把 AI 整条链路跑通（含「算数 → 再交回模型总结」） */
+  const toB64 = (s) => btoa(unescape(encodeURIComponent(s)));
+  let httpCalls = 0;
+  const fakeReplies = [
+    JSON.stringify({ reply: '我来算一下最近 7 天的合计', actions: [{ type: 'sum', filter: { from: U.toISODate(U.addDays(new Date(), -6)), to: U.toISODate(new Date()) } }] }),
+    JSON.stringify({ reply: '最近 7 天的合计见上面的结果', actions: [] })
+  ];
+  window.AndroidApp = {
+    httpPost: function (id, url, headersJson, bodyJson) {
+      httpCalls++;
+      const content = fakeReplies[Math.min(httpCalls - 1, fakeReplies.length - 1)];
+      setTimeout(function () {
+        const cb = window.__aiCallbacks && window.__aiCallbacks[id];
+        if (cb) cb(200, toB64(JSON.stringify({ choices: [{ message: { content: content } }] })));
+      }, 10);
+    }
+  };
+
+  const aiCfgBak = JSON.parse(JSON.stringify(AI.config));
+  AI.config.endpoint = 'https://api.deepseek.com';
+  AI.config.apiKey = 'sk-test-key';
+  AI.config.model = 'deepseek-chat';
+  AI.save();
+
+  /* ---------- 44. 对话里直接显示算好的结果 ---------- */
+  UI.go('settings');
+  await wait(300);
+  UI.openAiSheet();
+  await wait(500);
+  const aiInput2 = $('#sheetRoot .ai-input-row input');
+  ok(!!aiInput2, 'AI 面板里有输入框');
+  aiInput2.value = '最近 7 天花了多少';
+  aiInput2.dispatchEvent(new Event('input', { bubbles: true }));
+  await wait(80);
+  $$('#sheetRoot .ai-input-row button')[0].click();
+  const tAI2 = Date.now();
+  while (!$$('#sheetRoot .ai-msg.calc').length && Date.now() - tAI2 < 8000) await wait(100);
+  eq($$('#sheetRoot .ai-msg.calc').length, 1, '算出来的结果直接出现在对话里（不用模型心算）');
+  const calcText = $('#sheetRoot .ai-msg.calc').textContent;
+  ok(calcText.indexOf('支出') >= 0 && calcText.indexOf('收入') >= 0, '结果里收入、支出都有：' + calcText);
+  eq(httpCalls, 2, 'AI 要求算数时，应用把结果再交回模型总结（一共两次请求）');
+  ok($('#sheetRoot .ai-log').textContent.indexOf('最近 7 天花了多少') >= 0, '自己说的话也显示在对话里');
+  ok($('#sheetRoot .ai-log').textContent.indexOf('最近 7 天') >= 0, '最后用模型总结的话回答用户');
+  UI.closeSheet();
+  await wait(450);
+  delete window.AndroidApp;
+  AI.config = aiCfgBak;
+  AI.save();
+  await wait(200);
+
   UI.go('home');
   await wait(250);
 
