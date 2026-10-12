@@ -416,7 +416,23 @@ public class MainActivity extends Activity {
         window.getDecorView().setOnApplyWindowInsetsListener(new View.OnApplyWindowInsetsListener() {
             @Override
             public WindowInsets onApplyWindowInsets(View v, WindowInsets insets) {
-                pushInsets(insets.getSystemWindowInsetTop(), insets.getSystemWindowInsetBottom());
+                int top = insets.getSystemWindowInsetTop();
+                int bottom = insets.getSystemWindowInsetBottom();
+                int ime = 0;
+
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+                    // 分开取：状态栏、导航栏各算各的，键盘高度单独报给网页
+                    top = insets.getInsets(WindowInsets.Type.statusBars()).top;
+                    bottom = insets.getInsets(WindowInsets.Type.navigationBars()).bottom;
+                    ime = insets.getInsets(WindowInsets.Type.ime()).bottom;
+                } else {
+                    // 旧系统只有一个 bottom：导航栏一般不超过 48dp，多出来的算键盘
+                    int navMax = (int) (48 * getResources().getDisplayMetrics().density);
+                    if (bottom > navMax) { ime = bottom - navMax; bottom = navMax; }
+                }
+
+                pushInsets(top, bottom);
+                pushKeyboardHeight(ime);
                 return insets.consumeSystemWindowInsets();
             }
         });
@@ -441,6 +457,28 @@ public class MainActivity extends Activity {
                 + "s.setProperty('--inset-t-px','" + top + "px');"
                 + "s.setProperty('--inset-b-px','" + bottom + "px');"
                 + "if(window.UI&&window.UI.applySafeArea)window.UI.applySafeArea();})()";
+        web.post(new Runnable() {
+            @Override
+            public void run() {
+                web.evaluateJavascript(js, null);
+            }
+        });
+    }
+
+    /* ---------------- 键盘高度 ----------------
+       键盘弹出时窗口不会缩小（系统栏边距被这里接管了），
+       所以要把键盘高度告诉网页，网页据此把弹层抬到键盘上方，
+       否则正在打字的输入框会被键盘盖住、看不到自己打了什么。 */
+    private int lastImeCss = -1;
+
+    private void pushKeyboardHeight(final int imePx) {
+        float density = getResources().getDisplayMetrics().density;
+        final int css = imePx > 0 ? DisplayUtils.physicalToCss(imePx, density) : 0;
+        if (css == lastImeCss) return;   // 高度没变就不打扰网页
+        lastImeCss = css;
+
+        final String js = "(function(){if(window.UI&&window.UI.onNativeIme)"
+                + "window.UI.onNativeIme(" + css + ");})()";
         web.post(new Runnable() {
             @Override
             public void run() {

@@ -40,7 +40,7 @@ sandbox.window = sandbox;
 sandbox.self = sandbox;
 vm.createContext(sandbox);
 
-['util', 'defaults', 'xlsx', 'db', 'store', 'stats', 'importer', 'report'].forEach((name) => {
+['util', 'defaults', 'xlsx', 'db', 'store', 'stats', 'importer', 'report', 'ai'].forEach((name) => {
   const file = path.join(ROOT, 'web', 'js', name + '.js');
   vm.runInContext(fs.readFileSync(file, 'utf8'), sandbox, { filename: file });
 });
@@ -407,6 +407,56 @@ function catName(tx) { return tx.categoryName || '(未分类)'; }
   const ccf = Store.commonCategoryFor('counterparty', '第一食堂');
   ok(ccf && ccf.name === '餐饮', '能推荐这个来源历史上最常记的分类（餐饮）');
   eq(Store.commonCategoryFor('counterparty', '从未出现过的商家'), null, '没见过的来源不给推荐');
+
+  /* ---------- 18. 内置 AI：看得见金额、能算数、能定位最近一笔 ---------- */
+  section('18. 内置 AI 助手：数据摘要、精确合计、定位「最近的一笔」');
+  const AImod = sandbox.AI;
+  ok(!!AImod, 'AI 模块已加载');
+
+  const digest = AImod.buildDigest();
+  ok(digest.indexOf('各周期合计') >= 0, '喂给 AI 的数据里带着各周期合计（不用它自己心算）');
+  ok(digest.indexOf('账目明细') >= 0, '喂给 AI 的数据里带着逐笔明细');
+  ok(/\d+\.\d\d/.test(digest), '明细里能看到具体金额');
+  ok(digest.indexOf('最近的一笔') >= 0, '明确告诉 AI 哪一笔是最近的');
+  ok(digest.indexOf('餐饮') >= 0, '明细里带着分类名');
+
+  /* 「最近的一笔」能精确定位 */
+  const newest = Store.tx.slice().sort((a, b) => (b.time - a.time) || (b.createdAt - a.createdAt))[0];
+  const m1 = AImod.match({ latest: 1 });
+  eq(m1.length, 1, 'latest:1 只命中一笔');
+  eq(m1[0].id, newest.id, '命中的正是时间最近的那一笔');
+  const m3 = AImod.match({ limit: 3 });
+  eq(m3.length, 3, 'limit:3 命中最近三笔');
+  ok(m3[0].time >= m3[1].time && m3[1].time >= m3[2].time, '结果按时间从新到旧');
+  ok(AImod.match({ latest: 2, txType: 'expense' }).every((t) => t.type === 'expense'), '「最近 N 笔」能和收支类型叠加');
+  ok(AImod.describeFilter({ latest: 1 }).indexOf('最近') >= 0, '条件说明会写成人话：' + AImod.describeFilter({ latest: 1 }));
+
+  /* 精确合计：和应用自己的统计模块完全一致 */
+  const sumAll = AImod.computeSum({});
+  const expectAll = Stats.summarize(Store.tx.filter((t) => !t.excludeStat));
+  eq(sumAll.income, expectAll.income, '全部收入合计与统计模块一致');
+  eq(sumAll.expense, expectAll.expense, '全部支出合计与统计模块一致');
+  eq(sumAll.balance, expectAll.net, '结余也对得上');
+  ok(sumAll.text.indexOf('收入') >= 0 && sumAll.text.indexOf('支出') >= 0 && sumAll.text.indexOf('结余') >= 0,
+    '给用户看的文字写清了收入 / 支出 / 结余：' + sumAll.text);
+
+  const day = U.toISODate(new Date(newest.time));
+  const sumDay = AImod.computeSum({ from: day, to: day });
+  const dayList = Store.tx.filter((t) => t.dateKey === day && !t.excludeStat);
+  eq(sumDay.count, dayList.length, '按某一天算合计，笔数对得上');
+  eq(sumDay.expense, Stats.summarize(dayList).expense, '按某一天算合计，金额对得上');
+
+  /* 改「最近的一笔」分类：走完整的「建议 → 确认 → 执行」 */
+  const target = Store.categories.find((c) => c.type === newest.type && c.name !== newest.categoryName);
+  ok(!!target, '找到一个可以用来改的分类：' + (target ? target.name : '-'));
+  const cards = AImod.resolve([{ type: 'setCategory', category: target.name, filter: { latest: 1 } }]);
+  eq(cards.length, 1, '生成一条待确认的改动');
+  eq(cards[0].ok, true, '这条改动可以执行');
+  eq(cards[0].count, 1, '只影响时间最近的那一笔');
+  ok(cards[0].sample.length === 1 && /\d+\.\d\d/.test(cards[0].sample[0]), '卡片上写明是哪一笔（带金额）：' + cards[0].sample[0]);
+  await cards[0].run();
+  eq(Store.getTx(newest.id).categoryName, target.name, '执行后最近那一笔的分类改成了「' + target.name + '」');
+  eq(Store.getTx(newest.id).id, newest.id, '改的确实是最近那一笔');
 
   /* ---------- 汇总 ---------- */
   console.log('\n' + '='.repeat(52));
