@@ -598,10 +598,33 @@
   ok(impTxt.indexOf('计入合计') >= 0, '有「计入合计」选项');
   ok(impTxt.indexOf('不导入') >= 0, '有「不导入」选项');
   const modeSegs = $$('#sheetRoot .seg');
-  ok(modeSegs.length >= 2, '有两组单选控件（不计收支 / 退款）：' + modeSegs.length + ' 组');
+  const segKids = (s) => Array.prototype.slice.call(s.children);
+  const findSeg = (label) => modeSegs.find((s) => segKids(s).some((b) => b.textContent === label));
+  ok(modeSegs.length >= 3, '有单选控件（重复处理 / 不计收支 / 退款）：' + modeSegs.length + ' 组');
 
-  if (modeSegs.length) {
-    const kids = Array.prototype.slice.call(modeSegs[0].children);
+  const segDup = findSeg('保留导入的数据');
+  ok(!!segDup, '导入面板有「重复的账单怎么处理」这一组');
+  if (segDup) {
+    const active0 = segKids(segDup).find((b) => b.classList.contains('is-active'));
+    ok(!!active0 && active0.textContent === '保留导入的数据',
+      '默认选中「保留导入的数据」：' + (active0 ? active0.textContent : '-'));
+    eq(UI.state.importOpts.dupMode, 'overwrite', '默认 dupMode=overwrite');
+    const btnSkip = segKids(segDup).find((b) => b.textContent === '跳过，保留原来的');
+    ok(!!btnSkip, '可以切成「跳过，保留原来的」');
+    if (btnSkip) {
+      btnSkip.click();
+      await wait(180);
+      eq(UI.state.importOpts.dupMode, 'skip', '切换后写入 dupMode=skip');
+      const btnOw = segKids(segDup).find((b) => b.textContent === '保留导入的数据');
+      if (btnOw) { btnOw.click(); await wait(150); }
+      eq(UI.state.importOpts.dupMode, 'overwrite', '再切回「保留导入的数据」');
+    }
+  }
+
+  const segIgnore = findSeg('不计入合计');
+  ok(!!segIgnore, '找到「不计收支」那一组');
+  if (segIgnore) {
+    const kids = segKids(segIgnore);
     const active = kids.find((b) => b.classList.contains('is-active'));
     ok(!!active && active.textContent === '计入合计',
       '默认就选中「计入合计」（什么都不排除）：' + (active ? active.textContent : '-'));
@@ -615,8 +638,7 @@
       await wait(180);
       ok(btnEx.classList.contains('is-active'), '可以切到「不计入合计」');
       eq(UI.state.importOpts.ignoreMode, 'exclude', '切换后写入 ignoreMode=exclude');
-      const btnBack = Array.prototype.slice.call(modeSegs[0].children)
-        .find((b) => b.textContent === '计入合计');
+      const btnBack = segKids(segIgnore).find((b) => b.textContent === '计入合计');
       if (btnBack) { btnBack.click(); await wait(150); }
       eq(UI.state.importOpts.ignoreMode, 'count', '再切回「计入合计」');
     }
@@ -931,7 +953,7 @@
   lastInput.focus();
   await wait(200);
   UI.nudgeActiveInput();
-  await wait(250);
+  await wait(760);   // 合并 + 平滑滚动，要等它滚完
   const liRect = lastInput.getBoundingClientRect();
   const shRect = kbSheet.getBoundingClientRect();
   ok(liRect.bottom <= shRect.bottom + 2,
@@ -944,7 +966,7 @@
   srcIn.focus();
   srcIn.value = '校园';
   srcIn.dispatchEvent(new Event('input', { bubbles: true }));
-  await wait(350);
+  await wait(820);   // 同上：等平滑滚动结束
   const acList = $('#sheetRoot .ac-list');
   ok(acList && acList.offsetHeight > 0, '联想候选列表弹了出来');
   const acRect = acList.getBoundingClientRect();
@@ -1052,6 +1074,351 @@
   AI.config = aiCfgBak;
   AI.save();
   await wait(200);
+
+  /* ---------- 45. 报销只报一部分（界面上走一遍） ---------- */
+  const catId45 = (Store.categories.find((c) => c.name === '餐饮') || Store.categories[0]).id;
+  const exp45 = await Store.addTx({
+    type: 'expense', amount: 38, time: Date.now(), categoryId: catId45, categoryName: '餐饮',
+    account: '微信', counterparty: '报销测试商家', item: '测试报销', source: 'manual'
+  });
+  UI.go('list');
+  await wait(300);
+  UI.openTxDetail(Store.getTx(exp45.id));
+  await wait(450);
+  ok($('#sheetRoot').textContent.indexOf('报销/排除') >= 0, '支出详情里有「报销/排除」入口');
+  UI.closeSheet();
+  await wait(420);
+
+  UI.openSettleSheet(Store.getTx(exp45.id));
+  await wait(480);
+  const amt45 = $('#sheetRoot .field .input');
+  ok(!!amt45, '报销面板里有金额输入框');
+  eq(amt45.value, '38', '报销金额默认就是原支出金额');
+  amt45.value = '20';
+  amt45.dispatchEvent(new Event('input', { bubbles: true }));
+  await wait(250);
+  ok($('#sheetRoot').textContent.indexOf('仍然算你自己的支出') >= 0,
+    '面板实时说明：只报一部分时，差额还算你的支出');
+  ok($('#sheetRoot').textContent.indexOf('不算收入') >= 0, '面板说明这笔钱不算收入');
+  $$('#sheetRoot .sheet-actions .btn')[0].click();
+  await wait(700);
+
+  const after45 = Store.getTx(exp45.id);
+  eq(after45.excludeAmount, 20, '抵扣掉 20');
+  eq(Stats.counted(after45), 18, '这笔支出只计入自己承担的 18');
+  const inc45 = Store.tx.find((t) => t.reimburseGroupId === after45.reimburseGroupId && t.reimburseRole === 'in');
+  ok(!!inc45, '生成了配对的收入记录');
+  eq(Stats.counted(inc45), 0, '报销到账的 20 元不算收入');
+  UI.go('list');
+  await wait(420);
+  ok($('#view-list').textContent.indexOf('自付') >= 0, '明细里写明「已报销 …，自付 18.00」');
+  ok($('#view-list').textContent.indexOf('报销测试商家') >= 0, '这笔支出仍然留在明细里');
+
+  /* 后来又全还清了：再进一次面板改成 38 */
+  UI.openTxDetail(Store.getTx(exp45.id));
+  await wait(450);
+  const again45 = $$('#sheetRoot .sheet-actions .btn').filter((b) => b.textContent.indexOf('又还了一部分') >= 0)[0];
+  ok(!!again45, '配对之后可以「又还了一部分 / 改金额」');
+  if (again45) {
+    again45.click();
+    await wait(700);
+    const amt45b = $('#sheetRoot .field .input');
+    amt45b.value = '38';
+    amt45b.dispatchEvent(new Event('input', { bubbles: true }));
+    await wait(220);
+    $$('#sheetRoot .sheet-actions .btn')[0].click();
+    await wait(700);
+    eq(Stats.counted(Store.getTx(exp45.id)), 0, '后来又全还清了：这笔支出不再计入统计');
+    eq(Store.tx.filter((t) => t.reimburseGroupId === Store.getTx(exp45.id).reimburseGroupId).length, 2,
+      '还是两笔，没有多出来一条');
+  }
+
+  /* ---------- 46. 代付的钱后来收回来了 ---------- */
+  const exp46 = await Store.addTx({
+    type: 'expense', amount: 45, time: Date.now(), categoryId: catId45, categoryName: '餐饮',
+    account: '微信', counterparty: '代付测试同学', item: '帮买书', source: 'manual'
+  });
+  await Store.updateTx(exp46.id, { excludeStat: true, excludeReason: '代付' });
+  UI.go('list');
+  await wait(300);
+  UI.openTxDetail(Store.getTx(exp46.id));
+  await wait(450);
+  const backBtn46 = $$('#sheetRoot .sheet-actions .btn').filter((b) => b.textContent === '收回来了')[0];
+  ok(!!backBtn46, '代付的详情里有「收回来了」按钮（不用再手动去恢复统计）');
+  ok($('#sheetRoot').textContent.indexOf('恢复计入统计') >= 0, '同时也保留「恢复计入统计」的入口');
+  if (backBtn46) backBtn46.click();
+  await wait(750);
+  ok($('#sheetRoot').textContent.indexOf('收回垫付的钱') >= 0, '打开的是「收回垫付的钱」面板');
+  ok($('#sheetRoot').textContent.indexOf('收回金额') >= 0, '字段写的是「收回金额」而不是「报销到账金额」');
+  $$('#sheetRoot .sheet-actions .btn')[0].click();
+  await wait(750);
+  const after46 = Store.getTx(exp46.id);
+  eq(after46.excludeStat, true, '全部收回后，这笔代付仍然不计入统计');
+  const inc46 = Store.tx.find((t) => t.reimburseGroupId === after46.reimburseGroupId && t.reimburseRole === 'in');
+  ok(!!inc46, '生成了配对的收回记录');
+  eq(inc46.categoryName, '收回代付', '归到「收回代付」分类');
+  eq(Stats.counted(inc46), 0, '收回来的钱不算收入');
+  UI.go('list');
+  await wait(420);
+  ok($('#view-list').textContent.indexOf('已收回') >= 0, '明细里显示「已收回」');
+
+  /* ---------- 47. 一次转账抵消多笔垫付（界面上走一遍） ---------- */
+  for (const pt of Store.pendingReimburse()) { await Store.cancelReimburse(pt.id); }   // 清掉前面遗留的待报销
+  await wait(300);
+  const now47 = Date.now();
+  const m1 = await Store.addTx({ type: 'expense', amount: 38, time: now47 - 3000, categoryId: catId45, categoryName: '餐饮', account: '微信', counterparty: '垫付甲商家', item: '垫付', source: 'manual' });
+  const m2 = await Store.addTx({ type: 'expense', amount: 60, time: now47 - 2000, categoryId: catId45, categoryName: '餐饮', account: '微信', counterparty: '垫付乙商家', item: '垫付', source: 'manual' });
+  await Store.markReimburse(m1.id, '报销');
+  await Store.markReimburse(m2.id, '报销');
+  UI.go('list');
+  await wait(350);
+  UI.openSettleSheet(Store.getTx(m1.id));
+  await wait(520);
+  const rows47 = $$('#sheetRoot .pick-row');
+  ok(rows47.length >= 2, '面板里列出了可以抵消的垫付记录（' + rows47.length + ' 条）');
+  ok($('#sheetRoot').textContent.indexOf('选中 2 笔') >= 0, '默认把两笔待报销的都勾上了');
+  eq($$('#sheetRoot .pick-row input').filter((b) => b.checked).length, 2, '两个勾选框都是选中状态');
+  const amt47 = $('#sheetRoot .field .input');
+  eq(amt47.value, '98', '默认金额就是选中的两笔之和（38 + 60）');
+  amt47.value = '150';
+  amt47.dispatchEvent(new Event('input', { bubbles: true }));
+  await wait(250);
+  ok($('#sheetRoot').textContent.indexOf('多出来的') >= 0, '预览会提示多出来多少钱');
+  ok($('#sheetRoot').textContent.indexOf('计入收入') >= 0, '并说明多出来的计入收入');
+  $$('#sheetRoot .sheet-actions .btn')[0].click();
+  await wait(850);
+  eq(Store.getTx(m1.id).excludeStat, true, '垫付甲被抵消，不计入统计');
+  eq(Store.getTx(m2.id).excludeStat, true, '垫付乙被抵消，不计入统计');
+  const inc47 = Store.tx.find((t) => t.reimburseGroupId === Store.getTx(m1.id).reimburseGroupId && t.reimburseRole === 'in');
+  ok(!!inc47 && inc47.amount === 150, '生成了一笔 150 的到账记录');
+  eq(Stats.counted(inc47), 52, '只有多出来的 52 元（150 - 98）计入收入');
+  eq(Store.tx.filter((t) => t.reimburseGroupId === inc47.reimburseGroupId).length, 3, '一组 3 条：2 笔垫付 + 1 笔到账');
+  UI.go('list');
+  await wait(400);
+  ok($('#view-list').textContent.indexOf('垫付甲商家') >= 0, '被抵消的垫付仍然留在明细里');
+
+  /* ---------- 48. 概览有支出走势折线图 ---------- */
+  UI.go('home');
+  await wait(500);
+  const chart48 = $('#view-home .line-chart');
+  ok(!!chart48, '概览里有折线图');
+  ok($('#view-home').textContent.indexOf('支出走势') >= 0, '卡片标题是「支出走势」');
+  ok(chart48.querySelectorAll('path.lc-line').length >= 1, '折线画出来了');
+  ok(chart48.querySelectorAll('.lc-x').length >= 2, '横轴有日期刻度');
+  ok(chart48.querySelectorAll('.lc-grid').length >= 2, '有横向参考线');
+  ok(!!$('#view-home .chart-legend'), '图下面有图例');
+  var homePeriods = ['week', 'month', 'all'];
+  var chartOk = true;
+  for (var hp = 0; hp < homePeriods.length; hp++) {
+    UI.state.homePeriod = homePeriods[hp];
+    UI.renderHome();
+    await wait(220);
+    if (!$('#view-home .line-chart')) { chartOk = false; break; }
+  }
+  ok(chartOk, '切到本周 / 本月 / 全部，折线图都在');
+  UI.state.homePeriod = 'month';
+  UI.renderHome();
+  await wait(250);
+
+  /* ---------- 49. 记一笔里可以调整分类顺序 ---------- */
+  UI.go('list');
+  await wait(280);
+  UI.openTxSheet(null);
+  await wait(520);
+  const catNames = () => $$('#sheetRoot .cat-pick').map((b) => { const n = b.querySelector('.cn'); return n ? n.textContent : ''; });
+  const namesBefore = catNames();
+  ok(namesBefore.length >= 3, '分类格子渲染出来了（' + namesBefore.length + ' 个）');
+  const sortBtn49 = $$('#sheetRoot button').filter((b) => b.textContent === '调整顺序')[0];
+  ok(!!sortBtn49, '分类旁边有「调整顺序」按钮');
+  if (sortBtn49) sortBtn49.click();
+  await wait(320);
+  ok($$('#sheetRoot .cat-pick.is-sorting').length >= 3, '进入排序模式');
+  ok($$('#sheetRoot .cs-btn').length >= 4, '每格上有 ◀ ▶ 两个小按钮');
+  const arrows = $$('#sheetRoot .cat-pick.is-sorting .cs-btn');
+  eq(arrows[0].disabled, true, '第一格的「◀」是灰的（已经在最前面）');
+  arrows[1].click();
+  await wait(520);
+  const namesAfter = catNames();
+  eq(namesAfter[0], namesBefore[1], '第一个分类挪到了第二位');
+  eq(namesAfter[1], namesBefore[0], '第二个分类挪到了第一位');
+  const stored = Store.categoriesFor('expense', false).slice(0, 2).map((c) => c.name);
+  eq(stored[0], namesAfter[0], '新顺序已经存下来了');
+  eq(stored[1], namesAfter[1], '第二名的顺序也存下来了');
+  /* 挪回去：点第二格的「◀」（第一格的 ◀ 本来就是灰的） */
+  $$('#sheetRoot .cat-pick.is-sorting .cs-btn')[2].click();
+  await wait(560);
+  eq(catNames()[0], namesBefore[0], '再挪回来，顺序恢复');
+  const doneBtn = $$('#sheetRoot button').filter((b) => b.textContent === '完成')[0];
+  ok(!!doneBtn, '按钮变成「完成」');
+  if (doneBtn) doneBtn.click();
+  await wait(300);
+  eq($$('#sheetRoot .cs-btn').length, 0, '点「完成」退出排序模式');
+  UI.closeSheet();
+  await wait(450);
+
+  /* ---------- 50. 导入遇到重复：保留导入的数据 ---------- */
+  UI.go('list');
+  await wait(300);
+  const cat50 = (Store.categories.find((c) => c.name === '餐饮') || Store.categories[0]).id;
+  const man50 = await Store.addTx({
+    type: 'expense', amount: 26.8, time: U.fromISO('2026-03-20 12:00').getTime(),
+    categoryId: cat50, categoryName: '餐饮', account: '现金',
+    counterparty: '我自己记的商家', item: '自己写的用途', note: '我的备注', source: 'manual'
+  });
+  const csv50 = '交易时间,交易类型,交易对方,商品,收/支,金额(元),支付方式,当前状态,交易单号,商户单号,备注\n' +
+    '2026-03-20 18:22:00,商户消费,便利店,零食,支出,¥26.80,零钱,支付成功,XL8888,M888,/';
+  const parsed50 = Importer.parse(csv50, { autoClassify: true, dedupe: true, ignoreMode: 'count', refundMode: 'count' });
+  const item50 = parsed50.items[0];
+  ok(!!item50 && (item50.dup || item50.suspect), '认出了和手动记录重复的那一条');
+  ok(item50.dupOf === man50.id, '并且认出重复的是你手动记的那一笔');
+  const txBefore50 = Store.tx.length;
+  item50.selected = true;
+  const n50 = await Importer.commit([item50], { dupMode: 'overwrite' });
+  eq(n50, 1, '更新了一条');
+  eq(Store.tx.length, txBefore50, '库里没有多出新的记录');
+  const upd50 = Store.getTx(man50.id);
+  eq(upd50.counterparty, '便利店', '商家换成了文件里准确的');
+  eq(upd50.externalId, 'XL8888', '交易单号补上了');
+  eq(upd50.note, '我的备注', '你自己写的备注保留');
+  eq(upd50.account, '现金', '你自己选的账户保留');
+  /* 再导一次同一份文件：这次是「交易单号已存在」，依然认得出 */
+  const again50 = Importer.parse(csv50, { autoClassify: true, dedupe: true, ignoreMode: 'count', refundMode: 'count' }).items[0];
+  eq(again50.dup, true, '同一份账单再导入时认出「交易单号已存在」');
+  eq(again50.dupOf, man50.id, '认出的还是同一笔');
+
+  /* ---------- 51. AI 助手入口要显眼 ---------- */
+  ok(!!$('#btnAI'), '顶栏有一个常驻的 AI 按钮（不用进设置里找）');
+  ok($('#btnAI').textContent.indexOf('AI') >= 0, '按钮上写着 AI：' + $('#btnAI').textContent.trim());
+  UI.go('home');
+  await wait(380);
+  ok(!!$('#view-home .ai-entry'), '概览页顶部也有一个 AI 助手入口');
+  ok($('#view-home .ai-entry').textContent.indexOf('AI 助手') >= 0, '入口上写着「问问 AI 助手」');
+  $('#btnAI').click();
+  await wait(520);
+  ok($('#sheetRoot').textContent.indexOf('内置 AI 助手') >= 0, '点顶栏按钮就能直接打开 AI 助手');
+  UI.closeSheet();
+  await wait(460);
+
+  /* ---------- 52. 假期不计入统计 ---------- */
+  const vacBefore52 = Store.vacations().slice();
+  await Store.updateSettings({ vacationExclude: true });
+  const vac52 = await Store.addVacation({ name: '测试假期', start: '2026-05-01', end: '2026-05-07' });
+  const catV52 = (Store.categories.find((c) => c.name === '餐饮') || Store.categories[0]).id;
+  const inVac52 = await Store.addTx({ type: 'expense', amount: 88, time: U.fromISO('2026-05-03 12:00').getTime(), categoryId: catV52, categoryName: '餐饮', account: '微信', counterparty: '假期消费测试', item: '景区门票', source: 'manual' });
+  const outVac52 = await Store.addTx({ type: 'expense', amount: 66, time: U.fromISO('2026-06-03 12:00').getTime(), categoryId: catV52, categoryName: '餐饮', account: '微信', counterparty: '平时消费测试', item: '午饭', source: 'manual' });
+  eq(Stats.counted(Store.getTx(inVac52.id)), 0, '假期里的那笔不计入统计');
+  eq(Stats.counted(Store.getTx(outVac52.id)), 66, '不在假期里的照常计入');
+
+  UI.go('settings');
+  await wait(420);
+  ok($('#view-settings').textContent.indexOf('假期设置') >= 0, '设置页有「假期设置」入口');
+  const vacBtn52 = $$('#view-settings button').filter((b) => b.textContent.indexOf('假期设置') >= 0)[0];
+  ok(!!vacBtn52, '找得到那个按钮');
+  if (vacBtn52) vacBtn52.click();
+  await wait(520);
+  ok($('#sheetRoot').textContent.indexOf('假期期间不计入统计') >= 0, '假期面板里有总开关');
+  ok($('#sheetRoot').textContent.indexOf('测试假期') >= 0, '列出了已经加好的假期');
+  ok($('#sheetRoot').textContent.indexOf('2026-05-01') >= 0 && $('#sheetRoot').textContent.indexOf('2026-05-07') >= 0, '显示出起止日期');
+  const editBtn52 = $$('#sheetRoot .cat-row button').filter((b) => b.textContent === '编辑')[0];
+  ok(!!editBtn52, '每个假期都能编辑（提前回校就把结束日改早）');
+  if (editBtn52) editBtn52.click();
+  await wait(360);
+  ok($('#sheetRoot').textContent.indexOf('保存修改') >= 0, '点「编辑」进入修改状态');
+  ok($('#sheetRoot').textContent.indexOf('取消编辑') >= 0, '也能取消编辑');
+  UI.closeSheet();
+  await wait(460);
+
+  UI.state.list = Object.assign(UI.state.list, { period: 'all', types: [], categoryIds: [], accounts: [], showHidden: true });
+  UI.go('list');
+  await wait(460);
+  const listTxt52 = $('#view-list').textContent;
+  ok(listTxt52.indexOf('假期消费测试') >= 0, '假期的账目仍然留在明细里');
+  ok(listTxt52.indexOf('假期') >= 0, '明细里标出了「假期」');
+  UI.state.list.period = 'month';
+
+  await Store.updateSettings({ vacationExclude: false });
+  eq(Stats.counted(Store.getTx(inVac52.id)), 88, '关掉开关后，假期里的钱又计入了统计');
+  await Store.updateSettings({ vacationExclude: true });
+  eq(Stats.counted(Store.getTx(inVac52.id)), 0, '再打开又恢复不计入');
+
+  await Store.removeVacation(vac52.id);
+  await Store.removeManyTx([inVac52.id, outVac52.id]);
+  await Store.updateSettings({ vacations: vacBefore52 });
+  eq(Store.vacations().length, vacBefore52.length, '收尾：假期列表恢复原样');
+
+  /* ---------- 53. 节假日提醒与联网获取（测试版） ---------- */
+  const holBak = { data: Store.settings.holidayData, prompts: Store.settings.holidayPrompts };
+  const soonIso = U.toISODate(U.addDays(new Date(), 3));
+  const soonEndIso = U.toISODate(U.addDays(new Date(), 6));
+  const holKey = '国庆|' + soonIso;
+  await Store.updateSettings({
+    holidayData: { fetchedAt: Date.now(), source: '测试', list: [{ key: holKey, name: '国庆', start: soonIso, end: soonEndIso }] },
+    holidayPrompts: {},
+    vacationExclude: true
+  });
+  UI.go('home');
+  await wait(520);
+  ok(!!$('#view-home .holiday-card'), '概览上出现了节假日提醒');
+  const hcTxt = $('#view-home .holiday-card').textContent;
+  ok(hcTxt.indexOf('国庆') >= 0, '写着是哪个假期');
+  ok(hcTxt.indexOf('测试版') >= 0, '标了「测试版」');
+  ok(hcTxt.indexOf('还有') >= 0, '写着还剩几天');
+  const hcRefuse = $$('#view-home .holiday-card button').filter((b) => b.textContent === '照常计入')[0];
+  ok(!!hcRefuse, '有「照常计入」这个选择');
+  if (hcRefuse) hcRefuse.click();
+  await wait(560);
+  ok(!$('#view-home .holiday-card'), '选过之后提醒就消失了（不会一直弹）');
+  eq(Holiday.isHandled(holKey), true, '记下了已经处理过');
+
+  /* 「设为假期」这条路 */
+  await Store.updateSettings({ holidayPrompts: {} });
+  UI.renderHome();
+  await wait(420);
+  const hcAccept = $$('#view-home .holiday-card button').filter((b) => b.textContent.indexOf('设为假期') >= 0)[0];
+  ok(!!hcAccept, '有「设为假期（不计入统计）」按钮');
+  if (hcAccept) hcAccept.click();
+  await wait(680);
+  ok(Store.vacations().some((v) => v.name === '国庆'), '一点就加进了假期列表');
+  ok(!$('#view-home .holiday-card'), '提醒消失');
+
+  /* 假期面板里的联网获取区 */
+  UI.go('settings');
+  await wait(420);
+  ok($('#view-settings').textContent.indexOf('测试版') >= 0, '设置页也标了测试版');
+  UI.openVacationSheet();
+  await wait(560);
+  ok($('#sheetRoot').textContent.indexOf('节假日数据') >= 0, '假期面板里有「节假日数据」一栏');
+  ok($('#sheetRoot').textContent.indexOf('从网上获取') >= 0, '有联网获取按钮');
+  const hSrc = $$('#sheetRoot input.input').filter((el) => String(el.value).indexOf('http') === 0)[0];
+  ok(!!hSrc, '数据源地址可以自己改：' + (hSrc ? hSrc.value : '-'));
+  ok($('#sheetRoot').textContent.indexOf('解析粘贴的数据') >= 0, '取不到时还能手动粘贴 JSON');
+  const hPaste = $('#sheetRoot textarea');
+  ok(!!hPaste, '有粘贴框');
+  if (hPaste) {
+    hPaste.value = JSON.stringify([{ name: '粘贴测试假', start: '2027-03-01', end: '2027-03-03' }]);
+    const parseBtn = $$('#sheetRoot button').filter((b) => b.textContent === '解析粘贴的数据')[0];
+    if (parseBtn) parseBtn.click();
+    await wait(640);
+    ok($('#sheetRoot').textContent.indexOf('粘贴测试假') >= 0, '解析出来后列在下面等着勾选');
+    const addBtn = $$('#sheetRoot button').filter((b) => b.textContent.indexOf('把勾选的加进假期') >= 0)[0];
+    ok(!!addBtn, '有「把勾选的加进假期」按钮');
+    if (addBtn) addBtn.click();
+    await wait(760);
+    ok(Store.vacations().some((v) => v.name === '粘贴测试假'), '加进假期列表了');
+  }
+  UI.closeSheet();
+  await wait(460);
+
+  /* 收尾：把测试造的假期与数据都还原 */
+  const vList53 = Store.vacations().slice();
+  for (let i53 = 0; i53 < vList53.length; i53++) {
+    const nm = vList53[i53].name;
+    if (nm === '国庆' || nm === '粘贴测试假') await Store.removeVacation(vList53[i53].id);
+  }
+  await Store.updateSettings({ holidayData: holBak.data, holidayPrompts: holBak.prompts });
+  eq(Store.vacations().filter((v) => v.name === '粘贴测试假').length, 0, '收尾：测试假期已清掉');
+  UI.go('home');
+  await wait(320);
 
   UI.go('home');
   await wait(250);

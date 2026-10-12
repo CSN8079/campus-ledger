@@ -24,7 +24,8 @@
 
   /* 需要参与同步的设置项（主题这类每台设备各不相同的设置不参与） */
   const SYNC_SETTING_KEYS = ['semesters', 'activeSemesterId', 'weekStart', 'rules',
-    'autoClassifyOnImport', 'dedupeOnImport', 'lastAccount'];
+    'autoClassifyOnImport', 'dedupeOnImport', 'lastAccount',
+    'vacations', 'vacationExclude', 'holidayData', 'holidayPrompts', 'holidayRemindDays'];
 
   /* 墓碑保留时长：超过这个时间的删除记录可以丢弃（默认 180 天） */
   const TOMBSTONE_TTL = 180 * 24 * 3600 * 1000;
@@ -61,10 +62,20 @@
       note: t.note || '',
       tags: Array.isArray(t.tags) ? t.tags.slice() : [],
       excludeStat: !!t.excludeStat,
+      /* 金额里有多少不计入统计（只报销了一部分时，抵扣掉的那部分） */
+      excludeAmount: (function (raw) {
+        const v = Math.abs(U.parseAmount(raw));
+        return (isFinite(v) && v > 0) ? U.round2(v) : 0;
+      })(t.excludeAmount),
       excludeReason: t.excludeReason || '',
       reimburseGroupId: t.reimburseGroupId || '',
       reimburseStatus: t.reimburseStatus || '',
       reimburseRole: t.reimburseRole || '',
+      /* 这次报销实际到账多少（用来在明细里说明「报销了多少、自付多少」） */
+      reimburseAmount: (function (raw) {
+        const v = Math.abs(U.parseAmount(raw));
+        return (isFinite(v) && v > 0) ? U.round2(v) : 0;
+      })(t.reimburseAmount),
       hidden: !!t.hidden,
       source: t.source || 'manual',
       externalId: t.externalId || '',
@@ -159,6 +170,39 @@
     return Store.categories
       .filter((c) => (includeHidden || !c.hidden) && (c.type === type || c.type === 'both'))
       .sort((a, b) => a.order - b.order);
+  };
+
+  /* 在同一个视图里往前/往后挪一格（「记一笔」里的「调整顺序」用）。
+     scopeList 是当前看得见的那个列表，保证换的是有意义的相邻两格。 */
+  Store.moveCategoryIn = async function (id, dir, scopeList) {
+    const arr = (scopeList || Store.categoriesFor(null, false)).slice();
+    const i = arr.findIndex(function (c) { return c.id === id; });
+    const j = i + dir;
+    if (i < 0 || j < 0 || j >= arr.length) return false;
+    const a = Store.getCategory(arr[i].id);
+    const b = Store.getCategory(arr[j].id);
+    if (!a || !b) return false;
+
+    if (a.order === b.order) {
+      /* 两笔的顺序值撞在一起时换不出来，就把这个视图整体重排一遍再换 */
+      const rows = [];
+      arr.forEach(function (c, idx) {
+        const cc = Store.getCategory(c.id);
+        if (!cc) return;
+        cc.order = 1000 + (idx + 1) * 10;
+        rows.push(cc);
+      });
+      const ra = rows.find(function (r) { return r.id === a.id; });
+      const rb = rows.find(function (r) { return r.id === b.id; });
+      const tmp0 = ra.order; ra.order = rb.order; rb.order = tmp0;
+      await DB.putMany('categories', rows);
+    } else {
+      const tmp = a.order; a.order = b.order; b.order = tmp;
+      await DB.putMany('categories', [a, b]);
+    }
+    Store.reindex();
+    Store.emit('categories');
+    return true;
   };
 
   Store.allCategoriesFor = function (type) {
@@ -351,63 +395,186 @@
     });
   };
 
-  /* 收到报销款：生成一笔关联的收入，并把两笔都设为「已报销·不计入统计」 */
-  Store.settleReimburse = async function (expenseId, opts) {
+  /* 报销 / 收回垫付，用词不一样，这里统一决定 */
+  Store.pairWords = function (reason) {
+    const r = String(reason || '');
+    if (r.indexOf('代付') >= 0 || r.indexOf('代垫') >= 0) {
+      return { act: '收回来了', done: '已收回', amount: '收回金额', cat: '收回代付', item: '收回代付', title: '收回垫付的钱' };
+    }
+    if (r.indexOf('借') >= 0) {
+      return { act: '收回来了', done: '已收回', amount: '收回金额', cat: '收回借款', item: '收回借款', title: '收回借出去的钱' };
+    }
+    return { act: '收到报销款', done: '已报销', amount: '报销到账金额', cat: '报销', item: '报销款', title: '收到报销款' };
+  };
+
+  /* 收到报销款 / 收回垫付：生成（或更新）一笔关联的对方记录，并和原支出配对。
+     报销、代付、借出去的钱，用的是同一套配对机制，只是用词不同。
+     三种情况都支持：
+       - 正好抵完：两笔都不计入统计
+       - 只还了一部分：收回的钱不算收入，抵扣掉的部分不计入；
+         剩下自己承担的那部分，仍然算你自己的支出
+       - 还多了：原支出全额不计入；多出来的那部分默认算收入
+         （想当礼物、不当收入的话，传 opts.countExtra = false）
+     已经配过对的再进来一次，是「改金额 / 对方又还了一部分」，
+     会更新原来那笔，不会多出一条。 */
+  Store.settleReimburse = async function (expenseIds, opts) {
     opts = opts || {};
-    const exp = Store.getTx(expenseId);
-    if (!exp) throw new Error('找不到该笔支出');
-    const groupId = exp.reimburseGroupId || U.uuid();
-    const catName = opts.categoryName || '报销';
+    const ids = (Array.isArray(expenseIds) ? expenseIds : [expenseIds]).filter(Boolean);
+    const exps = ids.map(function (id) { return Store.getTx(id); })
+      .filter(Boolean)
+      /* 按时间从早到晚抵消：先垫的先生效，和父母还钱的习惯一致 */
+      .sort(function (a, b) { return a.time - b.time; });
+    if (!exps.length) throw new Error('找不到要配对的支出');
+    const first = exps[0];
+    const reason = String(opts.reason || first.excludeReason || '报销').trim() || '报销';
+    const words = Store.pairWords(reason);
+    /* 从某一笔进来再改金额时，沿用原来那一组；一次抵消多笔时开新的一组 */
+    const groupId = (exps.length === 1 && first.reimburseGroupId) || U.uuid();
+    const catName = opts.categoryName || words.cat;
     let cat = Store.categories.find((c) => c.name === catName && c.type === 'income');
     if (!cat) cat = await Store.addCategory({ name: catName, type: 'income', icon: '🎫', color: '#8b5cf6' });
 
-    await Store.updateTx(expenseId, {
-      excludeStat: true,
-      excludeReason: '报销',
-      reimburseGroupId: groupId,
-      reimburseStatus: 'done',
-      reimburseRole: 'out'
-    });
+    const got = U.round2(Math.abs(U.parseAmount(opts.amount !== undefined ? opts.amount : exps[0].amount)));
+    const countExtra = opts.countExtra !== false;
 
-    const inc = await Store.addTx({
+    /* 这笔钱按「先垫先抵」的顺序分给选中的这几笔垫付：
+         分到的部分 → 从统计里抵扣掉；
+         没分到的那部分 → 仍然算我自己花的钱。 */
+    let remaining = got;
+    for (let i = 0; i < exps.length; i++) {
+      const exp = exps[i];
+      const amount = U.round2(exp.amount);
+      const covered = U.round2(Math.max(0, Math.min(remaining, amount)));
+      remaining = U.round2(remaining - covered);
+      const selfPay = U.round2(amount - covered);
+      await Store.updateTx(exp.id, {
+        excludeStat: selfPay <= 0,                 // 这一笔被完全抵消了才整笔不计入
+        excludeAmount: covered,                    // 抵扣掉的部分不计入（0 表示全额计入）
+        excludeReason: covered > 0 ? reason : exp.excludeReason || reason,
+        reimburseGroupId: groupId,
+        reimburseStatus: 'done',
+        reimburseRole: 'out',
+        reimburseAmount: covered
+      });
+    }
+
+    /* 整组里被抵消掉的总数（含之前已经配过的那些） */
+    const groupOuts = Store.tx.filter((x) => x.reimburseGroupId === groupId && x.reimburseRole === 'out');
+    const totalCovered = U.round2(groupOuts.reduce((s, x) => s + (x.reimburseAmount || 0), 0));
+    const extra = U.round2(Math.max(0, got - totalCovered));   // 父母多给的部分
+
+    const payload = {
       type: 'income',
-      amount: opts.amount !== undefined ? opts.amount : exp.amount,
+      amount: got,
       time: opts.time ? U.fromISO(opts.time).getTime() : Date.now(),
       categoryId: cat.id,
       categoryName: cat.name,
-      account: opts.account || exp.account,
+      account: opts.account || first.account,
       counterparty: opts.counterparty || '',
-      item: '报销款：' + (exp.item || exp.categoryName || '支出'),
+      item: (opts.item || words.item) + '：' + (first.item || first.categoryName || '支出'),
       note: opts.note || '',
-      excludeStat: true,
-      excludeReason: '报销',
+      /* 收回来的钱本身不算收入；只有「还多了」多出来的那部分才算 */
+      excludeStat: extra <= 0 || !countExtra,
+      excludeAmount: (extra > 0 && countExtra) ? totalCovered : 0,
+      excludeReason: reason,
       reimburseGroupId: groupId,
       reimburseStatus: 'done',
       reimburseRole: 'in',
+      reimburseAmount: got,
       source: 'manual'
-    });
-    return inc;
+    };
+
+    const existing = Store.tx.find((x) => x.reimburseGroupId === groupId && x.reimburseRole === 'in');
+    if (existing) {
+      await Store.updateTx(existing.id, payload);
+      return Store.getTx(existing.id);
+    }
+    return Store.addTx(payload);
   };
 
-  /* 取消报销标记：恢复计入统计 */
+  /* 一笔报销的相关数字：垫了多少、报了多少、抵掉多少、自付多少、多给多少。
+     一次转账可以抵消好几笔垫付，所以这里把整组一起算。 */
+  Store.reimburseInfo = function (t) {
+    if (!t || !t.reimburseGroupId) return null;
+    const group = t.reimburseGroupId;
+    const outs = Store.tx.filter(function (x) { return x.reimburseGroupId === group && x.reimburseRole === 'out'; });
+    const inc = Store.tx.find(function (x) { return x.reimburseGroupId === group && x.reimburseRole === 'in'; });
+    const spent = U.round2(outs.reduce(function (s, x) { return s + x.amount; }, 0));
+    const covered = U.round2(outs.reduce(function (s, x) { return s + (x.reimburseAmount || 0); }, 0));
+    const got = U.round2(inc ? inc.amount : covered);
+    const reason = (outs[0] && outs[0].excludeReason) || (inc && inc.excludeReason) || '报销';
+    return {
+      group: group,
+      reason: reason,
+      words: Store.pairWords(reason),
+      outs: outs,
+      out: outs[0] || null,
+      income: inc || null,
+      count: outs.length,
+      spent: spent,
+      got: got,
+      covered: U.round2(Math.min(covered, spent)),
+      selfPay: U.round2(Math.max(0, spent - covered)),
+      extra: U.round2(Math.max(0, got - covered))
+    };
+  };
+
+  /* 取消配对：整组（可能有好几笔垫付 + 一笔到账）全部恢复计入统计，
+     自动生成的那笔到账记录删掉。 */
   Store.cancelReimburse = async function (id) {
     const t = Store.getTx(id);
     if (!t) return;
     const group = t.reimburseGroupId;
-    const toRemove = [];
-    if (group) {
-      Store.tx.forEach((x) => { if (x.reimburseGroupId === group && x.id !== id) toRemove.push(x.id); });
-      if (toRemove.length) await Store.removeManyTx(toRemove);
+    if (!group) {
+      await Store.updateTx(id, {
+        excludeStat: false,
+        excludeAmount: 0,
+        excludeReason: '',
+        reimburseStatus: '',
+        reimburseRole: '',
+        reimburseAmount: 0
+      });
+      return true;
     }
-    await Store.updateTx(id, {
-      excludeStat: false,
-      excludeReason: '',
-      reimburseGroupId: '',
-      reimburseStatus: '',
-      reimburseRole: ''
-    });
+    const members = Store.tx.filter((x) => x.reimburseGroupId === group);
+    const autoIds = members.filter((x) => x.reimburseRole === 'in').map((x) => x.id);
+    const keepIds = members.filter((x) => x.reimburseRole !== 'in').map((x) => x.id);
+    for (let i = 0; i < keepIds.length; i++) {
+      await Store.updateTx(keepIds[i], {
+        excludeStat: false,
+        excludeAmount: 0,
+        excludeReason: '',
+        reimburseGroupId: '',
+        reimburseStatus: '',
+        reimburseRole: '',
+        reimburseAmount: 0
+      });
+    }
+    if (autoIds.length) await Store.removeManyTx(autoIds);
     if (Store._catMap.size === 0) Store.reindex();
     return true;
+  };
+
+  /* 一次报销时，可以让用户勾选「这笔钱抵消哪些垫付」。
+     待报销的排最前，其次是被标记为代付/借还款的，最后是最近的其它支出。 */
+  Store.reimburseCandidates = function (currentId) {
+    const rank = function (t) {
+      if (t.reimburseStatus === 'pending') return 0;
+      if (t.excludeStat && !t.reimburseGroupId) return 1;
+      return 2;
+    };
+    return Store.tx
+      .filter(function (t) {
+        if (t.type !== 'expense') return false;
+        if (t.reimburseGroupId && t.id !== currentId) return false;   // 已经配过对的不用再选
+        return true;
+      })
+      .sort(function (a, b) {
+        const ra = rank(a); const rb = rank(b);
+        if (ra !== rb) return ra - rb;
+        return b.time - a.time;
+      })
+      .slice(0, 60);
   };
 
   /* 待报销清单 */
@@ -544,6 +711,49 @@
     if (Store.settings.activeSemesterId === id) {
       Store.settings.activeSemesterId = (Store.semesters()[0] || {}).id || '';
     }
+    await Store.saveSettings();
+    Store.emit('settings');
+  };
+
+  /* ---------------- 假期 ----------------
+     寒暑假、国庆这些时间人在家，校园里的花销口径对不上，
+     所以可以让这段时间的账目不计入周/月/学期合计（明细里照常保留）。 */
+  Store.vacations = function () { return Store.settings.vacations || []; };
+
+  /* 这段时间落在哪个假期里（没有就返回 null） */
+  Store.inVacation = function (time) {
+    const t = Number(time) || 0;
+    const list = Store.vacations();
+    for (let i = 0; i < list.length; i++) {
+      const v = list[i];
+      if (!v || !v.start || !v.end) continue;
+      const from = U.startOfDay(U.fromISO(v.start)).getTime();
+      const to = U.endOfDay(U.fromISO(v.end)).getTime();
+      if (t >= from && t <= to) return v;
+    }
+    return null;
+  };
+
+  Store.addVacation = async function (v) {
+    const item = Object.assign({ id: U.uuid(), name: '假期' }, v);
+    Store.settings.vacations = Store.vacations().concat([item]);
+    await Store.saveSettings();
+    Store.emit('settings');
+    return item;
+  };
+
+  Store.updateVacation = async function (id, patch) {
+    const list = Store.vacations();
+    const item = list.find((x) => x.id === id);
+    if (!item) return null;
+    Object.assign(item, patch);
+    await Store.saveSettings();
+    Store.emit('settings');
+    return item;
+  };
+
+  Store.removeVacation = async function (id) {
+    Store.settings.vacations = Store.vacations().filter((x) => x.id !== id);
     await Store.saveSettings();
     Store.emit('settings');
   };

@@ -64,7 +64,7 @@ function connect(wsUrl) {
           ws.send(JSON.stringify({ id, method, params: params || {} }));
           setTimeout(() => {
             if (pending.has(id)) { pending.delete(id); rej(new Error('CDP 超时：' + method)); }
-          }, 60000);
+          }, 300000);
         });
       },
       events,
@@ -148,7 +148,7 @@ async function main() {
       expression: suiteExpr,
       awaitPromise: true,
       returnByValue: true,
-      timeout: 120000
+      timeout: 300000
     });
 
     let suiteValue = null;

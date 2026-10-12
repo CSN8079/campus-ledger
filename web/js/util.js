@@ -213,6 +213,46 @@
   /* 下载文本/二进制为文件
      在安卓 App（WebView）内改走原生接口，保存到系统的「下载」目录；
      在浏览器里则用标准的 Blob 下载。 */
+  /* 在安卓外壳里发起一次网络请求，彻底绕开网页的跨源限制。
+     外壳会把结果通过 window.__aiCallbacks[id](状态码, base64 正文) 回传。 */
+  U.nativeHttp = function (method, url, headers, body) {
+    return new Promise(function (resolve, reject) {
+      const A = global.AndroidApp;
+      const canGet = A && typeof A.httpGet === 'function';
+      const canPost = A && typeof A.httpPost === 'function';
+      if ((method === 'GET' && !canGet) || (method !== 'GET' && !canPost)) {
+        reject(new Error('这台设备没有原生请求能力'));
+        return;
+      }
+      const id = 'nh' + Date.now().toString(36) + Math.random().toString(36).slice(2, 8);
+      global.__aiCallbacks = global.__aiCallbacks || {};
+      const timer = setTimeout(function () {
+        delete global.__aiCallbacks[id];
+        reject(new Error('请求超时'));
+      }, 25000);
+      global.__aiCallbacks[id] = function (status, b64) {
+        clearTimeout(timer);
+        delete global.__aiCallbacks[id];
+        let text = '';
+        try {
+          const bin = atob(String(b64 || ''));
+          const bytes = new Uint8Array(bin.length);
+          for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
+          text = new TextDecoder('utf-8').decode(bytes);
+        } catch (e) { text = ''; }
+        resolve({ status: Number(status) || 0, text: text });
+      };
+      try {
+        if (method === 'GET') A.httpGet(id, url, JSON.stringify(headers || {}));
+        else A.httpPost(id, url, JSON.stringify(headers || {}), JSON.stringify(body || {}));
+      } catch (e) {
+        clearTimeout(timer);
+        delete global.__aiCallbacks[id];
+        reject(new Error('调用系统请求失败：' + e.message));
+      }
+    });
+  };
+
   U.download = function (filename, data, mime) {
     const blob = data instanceof Blob ? data : new Blob([data], { type: mime || 'text/plain;charset=utf-8' });
 

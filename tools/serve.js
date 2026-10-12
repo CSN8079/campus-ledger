@@ -385,6 +385,37 @@ function isPrivateHostname(host) {
   return false;
 }
 
+/* 简单的 GET（用于代取节假日这类只读数据） */
+function fetchGet(url) {
+  return new Promise(function (resolve, reject) {
+    let u;
+    try { u = new URL(url); } catch (e) { reject(new Error('地址不合法')); return; }
+    const mod = u.protocol === 'https:' ? require('node:https') : require('node:http');
+    const r2 = mod.request({
+      hostname: u.hostname,
+      port: u.port || (u.protocol === 'https:' ? 443 : 80),
+      path: u.pathname + (u.search || ''),
+      method: 'GET',
+      headers: { 'Accept': 'application/json,text/plain,*/*', 'User-Agent': 'jizhangben/1.0' },
+      timeout: 20000
+    }, function (r3) {
+      const chunks = [];
+      let size = 0;
+      r3.on('data', function (c) {
+        size += c.length;
+        if (size > 2 * 1024 * 1024) { r3.destroy(); return; }
+        chunks.push(c);
+      });
+      r3.on('end', function () {
+        resolve({ status: r3.statusCode || 0, body: Buffer.concat(chunks).toString('utf8') });
+      });
+    });
+    r2.on('timeout', function () { r2.destroy(new Error('等待响应超时')); });
+    r2.on('error', function (e) { reject(e); });
+    r2.end();
+  });
+}
+
 function forwardRequest(url, headers, payload) {
   return new Promise(function (resolve, reject) {
     let u;
@@ -503,6 +534,26 @@ async function handleRequest(req, res) {
     if (urlPath === '/api/backup' && req.method === 'POST') {
       const file = writeServerBackup('manual');
       return sendJSON(res, 200, { ok: !!file, file: file ? path.basename(file) : '' });
+    }
+    /* 代取节假日数据：浏览器受跨源限制时，由电脑上的服务去取。
+       和 AI 转发一样，只允许公网地址，避免变成内网探测工具。 */
+    if (urlPath === '/api/fetch' && req.method === 'GET') {
+      const q = new URL(req.url, 'http://localhost').searchParams.get('url') || '';
+      let parsed = null;
+      try { parsed = new URL(q); } catch (e) { parsed = null; }
+      if (!parsed || (parsed.protocol !== 'http:' && parsed.protocol !== 'https:')) {
+        return sendJSON(res, 400, { ok: false, error: '只支持 http/https 地址' });
+      }
+      if (isPrivateHostname(parsed.hostname)) {
+        return sendJSON(res, 403, { ok: false, error: '不允许访问内网地址' });
+      }
+      try {
+        const out = await fetchGet(q);
+        console.log('  [代取] ' + parsed.hostname + ' 返回 ' + out.status);
+        return sendJSON(res, 200, { ok: true, status: out.status, body: out.body });
+      } catch (e) {
+        return sendJSON(res, 502, { ok: false, error: '获取失败：' + (e && e.message ? e.message : '未知错误') });
+      }
     }
     if (urlPath === '/api/logout') {
       res.setHeader('Set-Cookie', COOKIE_NAME + '=; Path=/; Max-Age=0');

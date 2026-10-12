@@ -295,13 +295,19 @@
     const seenKeys = new Set();
     // 已有的精确键（交易单号 / 完整字段组合）
     const existing = new Set();
+    /* 键 → 原来那一笔。重复时不光要认出来，还要知道认的是哪一笔，
+       这样用户选「保留导入的数据」时才能就地更新它，而不是新增一条。 */
+    const existingByKey = new Map();
     // 宽松索引：同一天 + 同方向 + 同金额 —— 用来发现"金额日期都对得上"的疑似重复
     // （常见场景：先手动记了一笔，之后又导入了包含这笔的账单）
     const looseIndex = new Map();
-    const looseKeyOf = (t) => t.dateKey + '|' + t.type + '|' + (Number(t.amount) || 0).toFixed(2);
+    /* 没有 dateKey 的（比如刚解析出来、还没入库的）就用时间自己算一个，
+       否则键会变成 'undefined|expense|12.00'，比对永远不命中 */
+    const looseKeyOf = (t) => (t.dateKey || U.toISODate(new Date(t.time))) + '|' + t.type + '|' + (Number(t.amount) || 0).toFixed(2);
     Store.tx.forEach((t) => {
-      if (t.externalId) existing.add('ext:' + t.externalId);
+      if (t.externalId) { existing.add('ext:' + t.externalId); existingByKey.set('ext:' + t.externalId, t); }
       existing.add('fb:' + fallbackKey(t));
+      if (!existingByKey.has('fb:' + fallbackKey(t))) existingByKey.set('fb:' + fallbackKey(t), t);
       const k = looseKeyOf(t);
       if (!looseIndex.has(k)) looseIndex.set(k, []);
       looseIndex.get(k).push(t);
@@ -370,6 +376,7 @@
         type: type,
         amount: amount,
         time: time,
+        dateKey: U.toISODate(new Date(time)),
         categoryId: cat ? cat.id : '',
         categoryName: cat ? cat.name : '',
         account: guessAccount(detect.kind, payMethod),
@@ -387,9 +394,10 @@
       const extKey = tx.externalId ? 'ext:' + tx.externalId : '';
       const fbKey = 'fb:' + fallbackKey(tx);
       let isDup = false, dupReason = '';
+      let dupMatch = null;   // 认出来的「原来那一笔」
       if (opts.dedupe) {
-        if (extKey && existing.has(extKey)) { isDup = true; dupReason = '交易单号已存在'; }
-        else if (!extKey && existing.has(fbKey)) { isDup = true; dupReason = '同日同额同来源'; }
+        if (extKey && existing.has(extKey)) { isDup = true; dupReason = '交易单号已存在'; dupMatch = existingByKey.get(extKey) || null; }
+        else if (!extKey && existing.has(fbKey)) { isDup = true; dupReason = '同日同额同来源'; dupMatch = existingByKey.get(fbKey) || null; }
         else if (seenKeys.has(extKey || fbKey)) { isDup = true; dupReason = '文件内重复'; }
       }
       seenKeys.add(extKey || fbKey);
@@ -409,10 +417,20 @@
       }
       if (isSuspect) suspect++;
 
+      /* 疑似重复也认出「最可能就是那一笔」：商家一样优先，否则只有唯一候选时才算 */
+      if (!dupMatch && (isDup || isSuspect)) {
+        const hit = looseIndex.get(looseKeyOf(tx)) || [];
+        const same = hit.find((h) => h.counterparty && h.counterparty === tx.counterparty);
+        if (same) dupMatch = same;
+        else if (hit.length === 1) dupMatch = hit[0];
+      }
+
       items.push({
         ok: true,
         dup: isDup,
         dupReason: dupReason,
+        dupOf: dupMatch ? dupMatch.id : '',
+        dupOfLabel: dupMatch ? (dupMatch.source === 'manual' || !dupMatch.source ? '你手动记的那笔' : '以前导入的那笔') : '',
         suspect: isSuspect,
         suspectReason: suspectReason,
         selected: !isDup && !isSuspect,
@@ -477,22 +495,53 @@
     return r;
   };
 
-  /* ---------------- 提交入库 ---------------- */
-  I.commit = async function (items) {
+  /* ---------------- 提交入库 ----------------
+     opts.dupMode = 'overwrite' 时，重复的账单不新增，而是用文件里的数据
+     就地更新原来那一笔（文件是银行/微信/支付宝的原始记录，时间、商家、单号最准）。
+     你自己做过的决定——分类、账户、备注、报销/不计入统计、隐藏——会保留。 */
+  I.commit = async function (items, opts) {
+    opts = opts || {};
+    const overwrite = opts.dupMode === 'overwrite';
     const chosen = items.filter((it) => it.selected);
     if (!chosen.length) return 0;
     // 再次按 externalId 去重，防止同批次重复勾选
     const seen = new Set();
     const finalRows = [];
+    const patches = [];
     chosen.forEach((it) => {
       const key = it.tx.externalId || ('fb:' + fallbackKey(it.tx));
       if (it.tx.externalId) {
         if (seen.has(key)) return;
         seen.add(key);
       }
+      const old = (overwrite && it.dupOf) ? Store.getTx(it.dupOf) : null;
+      if (old) {
+        patches.push({
+          id: old.id,
+          time: it.tx.time,
+          amount: it.tx.amount,
+          type: it.tx.type,
+          counterparty: it.tx.counterparty,
+          item: it.tx.item,
+          externalId: it.tx.externalId || old.externalId,
+          source: it.tx.source || old.source,
+          categoryId: it.tx.categoryId || old.categoryId,
+          categoryName: it.tx.categoryId ? it.tx.categoryName : old.categoryName
+        });
+        return;
+      }
       finalRows.push(it.tx);
     });
-    return Store.addManyTx(finalRows);
+
+    let n = 0;
+    if (finalRows.length) n += await Store.addManyTx(finalRows);
+    for (let i = 0; i < patches.length; i++) {
+      const patch = Object.assign({}, patches[i]);
+      delete patch.id;
+      await Store.updateTx(patches[i].id, patch);
+      n++;
+    }
+    return n;
   };
 
   global.Importer = I;

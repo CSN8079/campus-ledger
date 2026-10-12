@@ -7,7 +7,7 @@
   const D = {};
 
   /* ---------- 版本号（改这一个地方，界面上会跟着变） ---------- */
-  D.APP_VERSION = '2.0.1';
+  D.APP_VERSION = '2.0.2';
 
   /* ---------- 记账账户 ---------- */
   D.accounts = ['微信', '支付宝', '银行卡', '现金', '校园卡', '其他'];
@@ -110,6 +110,11 @@
   /* ---------- 默认设置 ---------- */
   D.settings = {
     theme: 'auto',              // auto | light | dark
+    vacationExclude: true,      // 假期期间不计入统计（假期在设置里自己加）
+    vacations: [],              // [{ id, name, start, end }]
+    holidayRemindDays: 7,       // 节假日开始前 / 结束前多少天提醒
+    holidayData: null,          // 从网上取到的节假日：{ fetchedAt, source, list: [{key,name,start,end}] }
+    holidayPrompts: {},         // 已经处理过的提醒：{ 假期key: 'done' | 'skip' }
     weekStart: 1,               // 1 = 周一，0 = 周日
     currency: '¥',
     semesters: [],              // [{id,name,start,end}]

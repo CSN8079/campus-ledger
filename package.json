@@ -1,6 +1,6 @@
 {
   "name": "daxuesheng-jizhangben",
-  "version": "2.0.1",
+  "version": "2.0.2",
   "private": true,
   "description": "大学生活记账本 —— 安卓手机与电脑双端离线记账，支持账单导入、报销排除、数据同步与自动备份",
   "keywords": ["记账", "账单导入", "微信账单", "支付宝账单", "安卓", "APK", "离线", "同步", "备份"],

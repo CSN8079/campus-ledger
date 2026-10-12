@@ -40,7 +40,7 @@ sandbox.window = sandbox;
 sandbox.self = sandbox;
 vm.createContext(sandbox);
 
-['util', 'defaults', 'xlsx', 'db', 'store', 'stats', 'importer', 'report', 'ai'].forEach((name) => {
+['util', 'defaults', 'xlsx', 'db', 'store', 'stats', 'importer', 'report', 'ai', 'holiday'].forEach((name) => {
   const file = path.join(ROOT, 'web', 'js', name + '.js');
   vm.runInContext(fs.readFileSync(file, 'utf8'), sandbox, { filename: file });
 });
@@ -457,6 +457,291 @@ function catName(tx) { return tx.categoryName || '(未分类)'; }
   await cards[0].run();
   eq(Store.getTx(newest.id).categoryName, target.name, '执行后最近那一笔的分类改成了「' + target.name + '」');
   eq(Store.getTx(newest.id).id, newest.id, '改的确实是最近那一笔');
+
+  /* ---------- 19. 只报销一部分 / 报多了 / 代付的钱收回来 ---------- */
+  section('19. 报销只报一部分、报多了、代付的钱后来收回来');
+  const bid = (Store.categories.find((c) => c.name === '餐饮') || Store.categories[0]).id;
+  async function mkExp(amount, name, day) {
+    return Store.addTx({
+      type: 'expense', amount: amount, time: U.fromISO(day + ' 12:00').getTime(),
+      categoryId: bid, categoryName: '餐饮', account: '微信',
+      counterparty: name, item: '报销测试', source: 'manual'
+    });
+  }
+  function dayStats(day) {
+    const d = U.fromISO(day);
+    return Stats.full(Store.query({ from: d, to: d, includeExcluded: true, includeHidden: true }));
+  }
+
+  /* --- 只报销一部分：花 38，父母给了 20 --- */
+  const e1 = await mkExp(38, '部分报销测试', '2026-10-01');
+  const got1 = await Store.settleReimburse(e1.id, { amount: 20, time: '2026-10-02', counterparty: '爸爸', reason: '报销' });
+  eq(Store.getTx(e1.id).excludeStat, false, '只报一部分时，这笔支出没有整笔排除');
+  eq(Store.getTx(e1.id).excludeAmount, 20, '记账里记住「抵扣掉 20」');
+  eq(Stats.counted(Store.getTx(e1.id)), 18, '自己承担的 18 元仍然算支出');
+  eq(got1.excludeStat, true, '报销到账的 20 元不算收入');
+  eq(Stats.counted(got1), 0, '这 20 元一点收入都不计入');
+  const i1 = Store.reimburseInfo(Store.getTx(e1.id));
+  eq(i1.selfPay, 18, '配对信息里算出自己承担 18');
+  eq(i1.covered, 20, '配对信息里算出抵扣 20');
+  eq(i1.extra, 0, '没有多出来的钱');
+
+  const d1 = dayStats('2026-10-01');
+  const in1 = d1.parts.included.filter((t) => t.id === e1.id);
+  eq(in1.length, 1, '统计模块把「自付部分」算进了计入统计的列表');
+  eq(in1[0].amount, 18, '统计模块算出来是 18 元，不是 38');
+  ok(d1.partialTotal >= 20, '统计模块也记下了被抵扣的 20 元');
+
+  /* --- 报多了：花 30，父母给了 50 --- */
+  const e2 = await mkExp(30, '报多了测试', '2026-10-03');
+  const got2 = await Store.settleReimburse(e2.id, { amount: 50, time: '2026-10-03', counterparty: '妈妈', reason: '报销' });
+  eq(Store.getTx(e2.id).excludeStat, true, '报多了：原支出全额不计入统计');
+  eq(Stats.counted(Store.getTx(e2.id)), 0, '这笔支出一点都不计入');
+  eq(got2.excludeStat, false, '多出来的部分要算收入');
+  eq(Stats.counted(got2), 20, '多出来的 20 元（50 - 30）计入收入');
+  const got2b = await Store.settleReimburse(e2.id, { amount: 50, time: '2026-10-03', counterparty: '妈妈', reason: '报销', countExtra: false });
+  eq(got2b.id, got2.id, '再点一次是更新原来那笔，不会多出一条收入');
+  eq(Stats.counted(got2b), 0, '关掉开关后，多出来的 20 元也不算收入');
+  eq(Store.tx.filter((t) => t.reimburseGroupId === Store.getTx(e2.id).reimburseGroupId).length, 2, '这一组始终只有两笔');
+  await Store.settleReimburse(e2.id, { amount: 50, time: '2026-10-03', counterparty: '妈妈', reason: '报销' });
+  eq(Stats.counted(Store.getTx(got2.id)), 20, '再打开开关，又多计入 20 元收入');
+
+  /* --- 代付：先垫钱，后来对方把 45 全还了 --- */
+  const e3 = await mkExp(45, '代付收回测试', '2026-10-05');
+  await Store.updateTx(e3.id, { excludeStat: true, excludeReason: '代付' });
+  eq(Stats.counted(Store.getTx(e3.id)), 0, '代付的钱先是不计入统计的');
+  const back3 = await Store.settleReimburse(e3.id, { amount: 45, time: '2026-10-06', counterparty: '同学', reason: '代付' });
+  eq(Store.getTx(e3.id).excludeStat, true, '全部收回后，这笔代付仍然不计入统计');
+  eq(back3.excludeStat, true, '收回来的 45 元不算收入');
+  eq(back3.categoryName, '收回代付', '收入归到「收回代付」这个分类');
+  ok(back3.item.indexOf('收回代付') === 0, '用途写的是「收回代付：…」：' + back3.item);
+  eq(Store.reimburseInfo(Store.getTx(e3.id)).reason, '代付', '配对信息里记着这是代付');
+  eq(Store.pairWords('代付').done, '已收回', '代付用「已收回」的说法');
+  eq(Store.pairWords('报销').done, '已报销', '报销还是用「已报销」');
+
+  /* --- 代付只收回来一部分：垫了 100，只还了 60 --- */
+  const e4 = await mkExp(100, '代付部分收回', '2026-10-07');
+  await Store.updateTx(e4.id, { excludeStat: true, excludeReason: '代付' });
+  await Store.settleReimburse(e4.id, { amount: 60, time: '2026-10-08', counterparty: '同学', reason: '代付' });
+  eq(Store.getTx(e4.id).excludeStat, false, '只收回一部分时，这笔垫付重新计入统计');
+  eq(Stats.counted(Store.getTx(e4.id)), 40, '还没收回来的 40 元算自己的支出');
+  const d4 = dayStats('2026-10-07');
+  const in4 = d4.parts.included.filter((t) => t.id === e4.id);
+  eq(in4.length, 1, '统计模块把这 40 元放进了计入统计的列表');
+  eq(in4[0].amount, 40, '金额是 40');
+
+  /* --- 取消配对后要恢复原样 --- */
+  await Store.cancelReimburse(e1.id);
+  eq(Stats.counted(Store.getTx(e1.id)), 38, '取消配对后 38 元全额恢复计入统计');
+  eq(Store.getTx(e1.id).excludeAmount, 0, '抵扣金额清零');
+  eq(Store.getTx(e1.id).reimburseAmount, 0, '收到金额也清零');
+  ok(!Store.tx.some((t) => t.reimburseGroupId === i1.group && t.reimburseRole === 'in'), '配对的收入被删掉了');
+
+  /* ---------- 20. 多次垫付，一次性转给我（可能多给） ---------- */
+  section('20. 一次转账抵消多笔垫付：只有多出来的钱才算收入');
+  async function mkExpAt(amount, name, when) {
+    return Store.addTx({
+      type: 'expense', amount: amount, time: U.fromISO(when).getTime(),
+      categoryId: bid, categoryName: '餐饮', account: '微信',
+      counterparty: name, item: '垫付测试', source: 'manual'
+    });
+  }
+
+  const a1 = await mkExpAt(38, '垫付甲', '2026-10-09 08:00');
+  const a2 = await mkExpAt(60, '垫付乙', '2026-10-09 12:00');
+  const a3 = await mkExpAt(20, '垫付丙', '2026-10-09 18:00');
+  await Store.updateTx(a1.id, { excludeStat: true, excludeReason: '代付' });
+  await Store.updateTx(a2.id, { excludeStat: true, excludeReason: '代付' });
+  await Store.updateTx(a3.id, { excludeStat: true, excludeReason: '代付' });
+
+  const cands = Store.reimburseCandidates(a1.id);
+  ok(cands.some((c) => c.id === a1.id) && cands.some((c) => c.id === a2.id) && cands.some((c) => c.id === a3.id),
+    '三笔垫付都在可勾选的清单里');
+  ok(cands.every((c) => c.type === 'expense'), '清单里只有支出（自己先垫的钱）');
+
+  /* 一次性给 150，比实际垫的 118 多（故意打乱顺序，验证「先垫先抵」） */
+  const back = await Store.settleReimburse([a3.id, a1.id, a2.id],
+    { amount: 150, time: '2026-10-10', counterparty: '爸爸', reason: '报销' });
+  eq(Store.getTx(a1.id).excludeStat, true, '垫付甲被抵消 → 不计入统计');
+  eq(Store.getTx(a2.id).excludeStat, true, '垫付乙被抵消 → 不计入统计');
+  eq(Store.getTx(a3.id).excludeStat, true, '垫付丙被抵消 → 不计入统计');
+  eq(Stats.counted(Store.getTx(a1.id)) + Stats.counted(Store.getTx(a2.id)) + Stats.counted(Store.getTx(a3.id)), 0,
+    '三笔垫付一共 0 元计入统计');
+  eq(back.amount, 150, '到账记录是一笔 150');
+  eq(Stats.counted(back), 32, '只有多出来的 32 元（150 - 118）计入收入');
+  const info20 = Store.reimburseInfo(Store.getTx(a2.id));
+  eq(info20.count, 3, '一组里关联着三笔垫付');
+  eq(info20.spent, 118, '这一组垫付合计 118');
+  eq(info20.got, 150, '这一组收到 150');
+  eq(info20.extra, 32, '多出 32');
+  eq(Store.tx.filter((t) => t.reimburseGroupId === info20.group).length, 4, '一组总共 4 条：3 笔垫付 + 1 笔到账');
+
+  const d20 = dayStats('2026-10-09');
+  const in20 = d20.parts.included.filter((t) => [a1.id, a2.id, a3.id].indexOf(t.id) >= 0);
+  eq(in20.length, 0, '被抵消的三笔都不在「计入统计」里');
+
+  /* 只给 100（不够）：先垫的先生效，剩下 18 还是自己花的 */
+  const b1 = await mkExpAt(38, '垫付丁', '2026-10-11 08:00');
+  const b2 = await mkExpAt(60, '垫付戊', '2026-10-11 12:00');
+  const b3 = await mkExpAt(20, '垫付己', '2026-10-11 18:00');
+  await Store.settleReimburse([b1.id, b2.id, b3.id], { amount: 100, time: '2026-10-11', counterparty: '妈妈', reason: '报销' });
+  eq(Store.getTx(b1.id).excludeStat, true, '先垫的 38 被抵消');
+  eq(Store.getTx(b2.id).excludeStat, true, '第二笔 60 也被抵消');
+  eq(Store.getTx(b3.id).excludeStat, false, '只给 100 时，最后一笔没能全部抵消');
+  eq(Store.getTx(b3.id).reimburseAmount, 2, '最后一笔只被抵消了 2 元（100-38-60）');
+  eq(Stats.counted(Store.getTx(b3.id)), 18, '没抵消到的 18 元仍然算自己的支出');
+  eq(Stats.counted(Store.getTx(b3.id)) + Stats.counted(Store.getTx(b1.id)) + Stats.counted(Store.getTx(b2.id)), 18,
+    '这一组只计入自己承担的 18 元');
+
+  /* 取消：整组一起恢复 */
+  await Store.cancelReimburse(b1.id);
+  eq(Stats.counted(Store.getTx(b1.id)), 38, '取消后第一笔全额恢复计入统计');
+  eq(Stats.counted(Store.getTx(b3.id)), 20, '取消后第三笔也恢复成 20');
+  eq(Store.getTx(b1.id).reimburseGroupId, '', '配对关系被清掉了');
+
+  /* ---------- 21. 导入遇到重复：按你的选择保留导入的数据 ---------- */
+  section('21. 导入遇到重复：可以保留导入的数据（手动记的也能被更新）');
+  const CSV_HEAD = '交易时间,交易类型,交易对方,商品,收/支,金额(元),支付方式,当前状态,交易单号,商户单号,备注';
+  const dupOpts = { autoClassify: true, dedupe: true, ignoreMode: 'count', refundMode: 'count' };
+  const mkCsvRow = (row) => CSV_HEAD + '\n' + row;
+  const manCatId = (Store.categories.find((c) => c.name === '餐饮') || Store.categories[0]).id;
+
+  /* --- 情况一：先手动记一笔，再导入同一天同金额的账单 --- */
+  const manTx = await Store.addTx({
+    type: 'expense', amount: 26.8, time: U.fromISO('2026-03-20 12:00').getTime(),
+    categoryId: manCatId, categoryName: '餐饮', account: '现金',
+    counterparty: '我自己记的商家', item: '自己写的用途', note: '我的备注', source: 'manual'
+  });
+  const csvA = mkCsvRow('2026-03-20 18:22:00,商户消费,便利店,零食,支出,¥26.80,零钱,支付成功,XL9999,M999,/');
+  const hitA = Importer.parse(csvA, dupOpts).items[0];
+  ok(!!hitA, '解析出那一条流水');
+  eq(hitA.suspect, true, '和手动记的那笔「同日同额」，被认成疑似重复');
+  eq(hitA.dupOf, manTx.id, '并且认出重复的就是你手动记的那一笔');
+  ok(hitA.dupOfLabel.indexOf('手动') >= 0, '还说明了那是你手动记的：' + hitA.dupOfLabel);
+
+  const beforeA = Store.tx.length;
+  hitA.selected = true;
+  const nA = await Importer.commit([hitA], { dupMode: 'overwrite' });
+  eq(nA, 1, '「保留导入的数据」时更新了一条');
+  eq(Store.tx.length, beforeA, '没有新增记录（是就地更新）');
+  const updA = Store.getTx(manTx.id);
+  eq(updA.counterparty, '便利店', '商家换成了文件里准确的写法');
+  eq(updA.externalId, 'XL9999', '交易单号补上了（以后同一份账单不会再重复）');
+  eq(U.toISODateTimeLocal(new Date(updA.time)), '2026-03-20T18:22', '时间换成文件里的准确时间');
+  eq(updA.note, '我的备注', '你自己写的备注保留');
+  eq(updA.account, '现金', '你自己选的账户保留');
+  ok(!!updA.categoryName, '分类仍在：' + updA.categoryName);
+  eq(updA.id, manTx.id, '更新的就是原来那一笔（id 没变）');
+
+  const againA = Importer.parse(csvA, dupOpts).items[0];
+  eq(againA.dup, true, '同一份文件再导入时认出「交易单号已存在」');
+  eq(againA.dupOf, manTx.id, '认出的还是那一笔');
+
+  /* --- 情况二：选「跳过」时，原来那笔一个字都不动 --- */
+  const manB = await Store.addTx({
+    type: 'expense', amount: 31.5, time: U.fromISO('2026-03-22 09:00').getTime(),
+    categoryId: manCatId, categoryName: '餐饮', account: '微信',
+    counterparty: '手动记的早餐店', item: '早饭', source: 'manual'
+  });
+  const csvB = mkCsvRow('2026-03-22 09:14:00,商户消费,包子铺,早餐,支出,¥31.50,零钱,支付成功,XL7777,M777,/');
+  const hitB = Importer.parse(csvB, dupOpts).items[0];
+  eq(hitB.suspect, true, '第二笔也认出了同日同额');
+  eq(hitB.dupOf, manB.id, '认出的还是手动记的那一笔');
+  const beforeB = Store.tx.length;
+  hitB.selected = true;
+  const nB = await Importer.commit([hitB], { dupMode: 'skip' });
+  eq(nB, 1, '「跳过」时照常新导入一条');
+  eq(Store.tx.length, beforeB + 1, '库里多了一条');
+  eq(Store.getTx(manB.id).counterparty, '手动记的早餐店', '原来那笔一个字都没动');
+
+  /* ---------- 22. 假期期间不计入统计（日期自己定） ---------- */
+  section('22. 假期不计入统计：日期区间自己定');
+  await Store.updateSettings({ vacationExclude: true, vacations: [] });
+  const vacA = await Store.addVacation({ name: '寒假', start: '2026-07-01', end: '2026-07-31' });
+  eq(Store.vacations().length, 1, '加上了 1 个假期');
+  ok(!!Store.inVacation(U.fromISO('2026-07-15 12:00').getTime()), '7 月 15 日算在假期里');
+  eq(Store.inVacation(U.fromISO('2026-08-01 00:00').getTime()), null, '8 月 1 日不算假期');
+  eq(Store.inVacation(U.fromISO('2026-07-31 23:59').getTime()).name, '寒假', '假期的最后一天 23:59 仍然算在内');
+
+  const hExp = await mkExpAt(50, '假期里的支出', '2026-07-15 12:00');
+  const sExp = await mkExpAt(60, '学期里的支出', '2026-06-15 12:00');
+  eq(Stats.counted(Store.getTx(hExp.id)), 0, '假期里的支出不计入统计');
+  eq(Stats.counted(Store.getTx(sExp.id)), 60, '不在假期里的照常计入');
+
+  const dH = dayStats('2026-07-15');
+  eq(dH.parts.included.filter((t) => t.id === hExp.id).length, 0, '统计模块把它挪出了「计入」那一边');
+  const exH = dH.parts.excluded.filter((t) => t.id === hExp.id);
+  eq(exH.length, 1, '放进了「不计入」那边');
+  eq(exH[0].excludeReason, '假期', '排除原因写的是「假期」');
+
+  /* 关掉总开关：照常计入 */
+  await Store.updateSettings({ vacationExclude: false });
+  eq(Stats.counted(Store.getTx(hExp.id)), 50, '关掉「假期不计入统计」后，这笔钱又计入了');
+  await Store.updateSettings({ vacationExclude: true });
+
+  /* 提前回校：把结束日改早，那天之后的账目重新计入 */
+  await Store.updateVacation(vacA.id, { end: '2026-07-10' });
+  const lateExp = await mkExpAt(20, '提前回校后', '2026-07-20 12:00');
+  eq(Stats.counted(Store.getTx(lateExp.id)), 20, '把假期结束日改早后，之后的支出重新计入统计');
+  eq(Stats.counted(Store.getTx(hExp.id)), 50, '7 月 15 日已不在假期里，也重新计入');
+  eq(Store.inVacation(U.fromISO('2026-07-20 12:00').getTime()), null, '7 月 20 日不再是假期');
+
+  await Store.removeVacation(vacA.id);
+  eq(Store.vacations().length, 0, '可以删掉假期');
+  eq(Stats.counted(Store.getTx(hExp.id)), 50, '删掉假期后照常计入');
+
+  /* ---------- 23. 节假日数据与提醒（测试版） ---------- */
+  section('23. 节假日数据与提醒（测试版）');
+  const Hol = sandbox.Holiday;
+  ok(!!Hol, '节假日模块已加载');
+
+  const hT1 = Hol.parse({ holiday: {
+    '01-01': { holiday: true, name: '元旦', date: '2027-01-01' },
+    '01-02': { holiday: true, name: '元旦', date: '2027-01-02' },
+    '01-03': { holiday: true, name: '元旦', date: '2027-01-03' },
+    '01-05': { holiday: false, name: '上班', date: '2027-01-05' }
+  } });
+  eq(hT1.length, 1, 'timor 那种格式：连续的几天合并成一个假期');
+  eq(hT1[0].name, '元旦', '名字认出来了');
+  eq(hT1[0].start, '2027-01-01', '开始日期正确');
+  eq(hT1[0].end, '2027-01-03', '连着三天合并成 1/1 ~ 1/3');
+  ok(!!hT1[0].key, '生成了唯一标识：' + hT1[0].key);
+
+  const hT2 = Hol.parse({ data: { list: [
+    { date: '20270101', holiday: 1, name: '元旦' },
+    { date: '20270102', holiday: 1, name: '元旦' }
+  ] } });
+  eq(hT2.length, 1, '另一种常见格式也认得出');
+  eq(hT2[0].end, '2027-01-02', '合并成 1/1 ~ 1/2');
+
+  const hT3 = Hol.parse([{ name: '寒假', start: '2027-01-20', end: '2027-02-20' }]);
+  eq(hT3.length, 1, '直接给出区间也能用');
+  eq(hT3[0].end, '2027-02-20', '结束日期保留');
+
+  eq(Hol.parse([{ date: '2027-05-01', holiday: 0, name: '调休上班' }]).length, 0, '调休上班日不算假期');
+
+  await Store.updateSettings({ holidayData: { fetchedAt: Date.now(), source: '测试', list: hT1 }, holidayPrompts: {}, vacationExclude: true });
+  const hNow = (s) => U.fromISO(s).getTime();
+  eq(Hol.cached().length, 1, '数据存进设置里了');
+  eq(Hol.suggestions(hNow('2026-12-20 10:00')).length, 0, '离得还远（12 天）先不打扰');
+  const hS1 = Hol.suggestions(hNow('2026-12-28 10:00'));
+  eq(hS1.length, 1, '还剩几天时提醒一次');
+  eq(hS1[0].kind, 'before', '属于「开始前」的提醒');
+  ok(hS1[0].left >= 3 && hS1[0].left <= 4, '带上还剩几天：' + hS1[0].left);
+  eq(Hol.suggestions(hNow('2027-01-02 10:00'))[0].kind, 'during', '假期当中提醒「快结束了」');
+  eq(Hol.suggestions(hNow('2027-02-01 10:00')).length, 0, '早就过去的不再提醒');
+
+  await Hol.mark(hT1[0].key, 'skip');
+  eq(Hol.suggestions(hNow('2026-12-28 10:00')).length, 0, '选了「照常计入」后就不再提醒（通知才会消失）');
+  await Store.updateSettings({ holidayPrompts: {} });
+
+  const hVac = await Store.addVacation({ name: '元旦', start: hT1[0].start, end: hT1[0].end });
+  eq(Hol.suggestions(hNow('2026-12-28 10:00')).length, 0, '已经设为假期了，也不用再提醒');
+  await Store.removeVacation(hVac.id);
+
+  await Store.updateSettings({ vacationExclude: false });
+  eq(Hol.suggestions(hNow('2026-12-28 10:00')).length, 0, '总开关关掉后不提醒');
+  await Store.updateSettings({ vacationExclude: true, holidayData: null, holidayPrompts: {} });
 
   /* ---------- 汇总 ---------- */
   console.log('\n' + '='.repeat(52));

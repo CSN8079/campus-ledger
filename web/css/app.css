@@ -299,6 +299,16 @@ a { color: var(--primary); }
 .cat-pick .ci { font-size: 19px; line-height: 1; }
 .cat-pick .cn { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 100%; }
 .cat-pick.is-active { border-color: var(--primary); background: var(--primary-soft); font-weight: 700; }
+/* 调整顺序模式：每格上多两个 ◀ ▶ */
+.cat-pick.is-sorting { position: relative; padding-bottom: 26px; }
+.cat-pick .cs-move { display: flex; gap: 4px; position: absolute; left: 0; right: 0; bottom: 4px; justify-content: center; }
+.cat-pick .cs-btn {
+  border: 1px solid var(--line); background: var(--bg); color: var(--text-soft);
+  border-radius: 6px; font-size: 10px; line-height: 1; padding: 3px 6px; cursor: pointer;
+}
+.cat-pick .cs-btn:disabled { opacity: .3; cursor: default; }
+.label-row { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+.label-row label { margin-bottom: 0; }
 
 .cat-row { display: flex; align-items: center; gap: 10px; padding: 10px 0; border-bottom: 1px solid var(--line); }
 .cat-row:last-child { border-bottom: 0; }
@@ -460,6 +470,58 @@ a { color: var(--primary); }
 .ac-item .ac-main { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .ac-item .ac-sub { font-size: 11px; color: var(--primary); background: var(--primary-soft); padding: 2px 6px; border-radius: 6px; white-space: nowrap; }
 .ac-item .ac-count { font-size: 11px; color: var(--text-faint); white-space: nowrap; flex: 0 0 auto; }
+
+/* ---------- 节假日提醒 ---------- */
+.holiday-card { border-color: var(--warn); background: var(--warn-soft); }
+.holiday-card .hc-head { display: flex; align-items: center; gap: 10px; }
+.holiday-card .hc-ico { font-size: 22px; }
+.holiday-card .hc-t { font-size: 15px; font-weight: 700; }
+.holiday-card .hc-d { font-size: 12px; color: var(--text-soft); margin-top: 2px; }
+.holiday-card .hc-ask { font-size: 12.5px; color: var(--text-soft); line-height: 1.7; margin: 10px 0 0; }
+.holiday-card .hc-actions { display: flex; gap: 8px; flex-wrap: wrap; margin-top: 12px; }
+
+/* ---------- AI 助手入口（要显眼） ---------- */
+.ai-btn {
+  width: auto; padding: 0 10px; display: inline-flex; align-items: center; gap: 3px;
+  background: linear-gradient(135deg, var(--primary), #9d7bff); color: #fff;
+  border-color: transparent; font-weight: 700; font-size: 13px;
+}
+.ai-btn .ai-btn-t { font-size: 11.5px; letter-spacing: .5px; }
+.ai-entry { display: flex; align-items: center; gap: 12px; cursor: pointer; }
+.ai-entry .ai-entry-ico {
+  width: 38px; height: 38px; flex: 0 0 38px; border-radius: 12px;
+  display: grid; place-items: center; font-size: 19px;
+  background: linear-gradient(135deg, var(--primary), #9d7bff); color: #fff;
+}
+.ai-entry .ai-entry-body { flex: 1; min-width: 0; }
+.ai-entry .ai-entry-t { font-size: 14.5px; font-weight: 700; }
+.ai-entry .ai-entry-d { font-size: 12px; color: var(--text-soft); margin-top: 2px; line-height: 1.6; }
+.ai-entry .ai-entry-go { color: var(--text-faint); font-size: 20px; line-height: 1; }
+
+/* ---------- 折线图 ---------- */
+.line-chart { width: 100%; height: auto; display: block; margin-top: 4px; }
+.line-chart .lc-grid { stroke: var(--line); stroke-width: 1; stroke-dasharray: 3 4; }
+.line-chart .lc-tick, .line-chart .lc-x { font-size: 9px; fill: var(--text-faint); }
+.line-chart .lc-peak { font-size: 10px; font-weight: 700; fill: var(--text); }
+.line-chart .lc-area { fill: var(--expense); opacity: .12; }
+.line-chart .lc-line { fill: none; stroke-width: 2; stroke-linejoin: round; stroke-linecap: round; }
+.line-chart .lc-line.lc-expense { stroke: var(--expense); }
+.line-chart .lc-line.lc-income { stroke: var(--income); stroke-dasharray: 4 3; stroke-width: 1.6; }
+.line-chart .lc-dot.lc-expense { fill: var(--expense); }
+.line-chart .lc-dot.lc-income { fill: var(--income); }
+.chart-legend { display: flex; gap: 12px; align-items: center; margin-top: 8px; font-size: 11.5px; color: var(--text-soft); }
+.chart-legend .lg-expense { color: var(--expense); }
+.chart-legend .lg-income { color: var(--income); }
+.chart-legend .lg-note { margin-left: auto; color: var(--text-faint); }
+
+/* ---------- 抵消哪些垫付的勾选清单 ---------- */
+.pick-list { max-height: 210px; overflow-y: auto; border: 1px solid var(--line); border-radius: var(--radius-sm); background: var(--bg-sunken); }
+.pick-row { display: flex; align-items: center; gap: 8px; padding: 9px 11px; border-bottom: 1px solid var(--line); font-size: 13px; cursor: pointer; }
+.pick-row:last-child { border-bottom: 0; }
+.pick-row input { flex: 0 0 auto; width: 16px; height: 16px; accent-color: var(--primary); }
+.pick-row .pr-main { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.pick-row .pr-amt { flex: 0 0 auto; font-variant-numeric: tabular-nums; color: var(--text-soft); }
+.pick-row.is-on { background: var(--primary-soft); }
 
 /* ---------- 内置 AI 助手 ---------- */
 .ai-log { max-height: 300px; overflow-y: auto; display: flex; flex-direction: column; gap: 8px; margin: 6px 0 10px; }
