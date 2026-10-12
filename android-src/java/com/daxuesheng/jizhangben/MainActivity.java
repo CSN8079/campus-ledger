@@ -237,6 +237,12 @@ public class MainActivity extends Activity {
             RequestRouting.setAiHost(host);
         }
 
+        /** 由原生发起一次 GET（取节假日数据用） */
+        @JavascriptInterface
+        public void httpGet(final String id, final String url, final String headersJson) {
+            doHttp(id, url, headersJson, null);
+        }
+
         /**
          * 由原生发起一次 POST（给内置 AI 用）。
          * 好处是彻底绕开网页的跨源限制；结果通过
@@ -245,6 +251,10 @@ public class MainActivity extends Activity {
          */
         @JavascriptInterface
         public void httpPost(final String id, final String url, final String headersJson, final String bodyJson) {
+            doHttp(id, url, headersJson, bodyJson);
+        }
+
+        private void doHttp(final String id, final String url, final String headersJson, final String bodyJson) {
             new Thread(new Runnable() {
                 @Override
                 public void run() {
@@ -257,10 +267,11 @@ public class MainActivity extends Activity {
                             throw new IOException("这个地址不在允许访问的范围内");
                         }
                         conn = (java.net.HttpURLConnection) u.openConnection();
-                        conn.setRequestMethod("POST");
+                        final boolean isGet = (bodyJson == null);
+                        conn.setRequestMethod(isGet ? "GET" : "POST");
                         conn.setConnectTimeout(15000);
                         conn.setReadTimeout(90000);
-                        conn.setDoOutput(true);
+                        conn.setDoOutput(!isGet);
                         conn.setRequestProperty("Accept", "application/json");
                         if (headersJson != null && headersJson.length() > 0) {
                             org.json.JSONObject hs = new org.json.JSONObject(headersJson);
@@ -271,13 +282,14 @@ public class MainActivity extends Activity {
                                 conn.setRequestProperty(k, hs.optString(k, ""));
                             }
                         }
-                        byte[] payload = (bodyJson == null ? "{}" : bodyJson)
-                                .getBytes(java.nio.charset.Charset.forName("UTF-8"));
-                        conn.setFixedLengthStreamingMode(payload.length);
-                        OutputStream os = conn.getOutputStream();
-                        os.write(payload);
-                        os.flush();
-                        os.close();
+                        if (!isGet) {
+                            byte[] payload = bodyJson.getBytes(java.nio.charset.Charset.forName("UTF-8"));
+                            conn.setFixedLengthStreamingMode(payload.length);
+                            OutputStream os = conn.getOutputStream();
+                            os.write(payload);
+                            os.flush();
+                            os.close();
+                        }
 
                         status = conn.getResponseCode();
                         InputStream in = (status >= 200 && status < 400)

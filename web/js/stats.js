@@ -92,16 +92,53 @@
     return { from: from, to: to, label: label, id: periodId };
   };
 
+  /* ---------------- 部分计入 ---------------- */
+  /* 一笔账里有多少钱是不计入统计的：
+       - 整笔排除（报销、代付、转账）→ 全额
+       - 只报销了一部分（比如花 38、报了 20）→ 抵扣掉的 20
+     这样「自己承担的那部分」才不会被漏掉。 */
+  S.excludedPart = function (t) {
+    if (!t) return 0;
+    if (t.excludeStat) return U.round2(t.amount);
+    const v = Number(t.excludeAmount) || 0;
+    return v > 0 ? U.round2(Math.min(v, t.amount)) : 0;
+  };
+
+  /* 这笔账是不是落在「假期」里（用户在设置里自己加的日期区间） */
+  S.isVacation = function (t) {
+    if (!t) return false;
+    if (Store.settings && Store.settings.vacationExclude === false) return false;
+    return !!(Store.inVacation && Store.inVacation(t.time));
+  };
+
+  /* 一笔账实际计入统计的钱 */
+  S.counted = function (t) {
+    if (!t || t.excludeStat || t.hidden) return 0;
+    if (S.isVacation(t)) return 0;
+    return U.round2(Math.max(0, t.amount - S.excludedPart(t)));
+  };
+
   /* ---------------- 数据拆分 ---------------- */
-  /* 把一批账单拆成「计入统计」与「不计入统计」两部分 */
+  /* 把一批账单拆成「计入统计」与「不计入统计」两部分。
+     部分报销的账目会拆成两个金额：计入的那部分进 included，
+     被抵扣的那部分单独记在 partial 里，方便界面上说明。 */
   S.split = function (list) {
-    const included = [], excluded = [], hidden = [];
+    const included = [], excluded = [], hidden = [], partial = [];
     list.forEach((t) => {
-      if (t.hidden) hidden.push(t);
-      else if (t.excludeStat) excluded.push(t);
-      else included.push(t);
+      if (t.hidden) { hidden.push(t); return; }
+      if (t.excludeStat) { excluded.push(t); return; }
+      /* 假期里的账目：留在明细里，但不参与任何合计 */
+      if (S.isVacation(t)) { excluded.push(Object.assign({}, t, { excludeReason: '假期' })); return; }
+      const cut = S.excludedPart(t);
+      if (cut > 0) {
+        partial.push(t);
+        const left = U.round2(t.amount - cut);
+        if (left > 0) included.push(Object.assign({}, t, { amount: left }));
+        return;
+      }
+      included.push(t);
     });
-    return { included: included, excluded: excluded, hidden: hidden };
+    return { included: included, excluded: excluded, hidden: hidden, partial: partial };
   };
 
   /* ---------------- 汇总 ---------------- */
@@ -123,7 +160,9 @@
       included: S.summarize(parts.included),
       excluded: S.summarize(parts.excluded),
       hidden: S.summarize(parts.hidden),
-      raw: S.summarize(list)
+      raw: S.summarize(list),
+      partial: parts.partial,
+      partialTotal: U.round2(parts.partial.reduce(function (s, t) { return s + S.excludedPart(t); }, 0))
     };
   };
 

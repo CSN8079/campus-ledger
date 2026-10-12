@@ -89,14 +89,23 @@
        - 网页自己用 visualViewport 算出来的（浏览器里靠这个）。
      窗口本身被键盘顶小的情况（电脑浏览器、部分系统）两者都会是 0，
      此时弹层本来就贴着键盘上方，不用额外处理。 */
+  /* 键盘收起时的窗口高度，用来判断「窗口是不是已经被系统顶小了」 */
+  let baseHeight = global.innerHeight || 0;
+
   UI.keyboardHeight = function () {
+    const h = global.innerHeight || 0;
     let guess = 0;
     const vv = global.visualViewport;
-    if (vv && global.innerHeight) {
-      const gap = global.innerHeight - (vv.height + vv.offsetTop);
+    if (vv && h) {
+      const gap = h - (vv.height + vv.offsetTop);
       if (gap > 90) guess = Math.round(gap);   // 小于 90 的当作地址栏伸缩之类的抖动
     }
-    return Math.max(guess, UI.nativeIme || 0);
+    const native = UI.nativeIme || 0;
+    if (!guess && !native && h > baseHeight) baseHeight = h;
+    /* 有些系统会把窗口本身顶小（内容区自动变矮）。这时再去抬面板就会抬过头，
+       表现为「往上滑太多、下面本来不用看的按钮全露出来了」。这种情况直接返回 0。 */
+    if (baseHeight && h < baseHeight - 120) return 0;
+    return Math.max(guess, native);
   };
 
   function applyKeyboardHeight(extra) {
@@ -114,8 +123,18 @@
     applyKeyboardHeight(30);
   };
 
-  /* 把正在输入的控件滚到弹层可视区里（联想列表一起算进去） */
+  /* 把正在输入的控件滚到弹层可视区里（联想列表一起算进去）。
+     键盘弹出时会连着触发好多次（聚焦、resize、scroll…），
+     每次直接跳一下就会「抖、跳、眼花」。这里做成：
+       1. 合并——连着来的调用只算最后一次，等一切稳定了再滚；
+       2. 平滑——用平滑滚动，不再瞬间跳过去。 */
+  let nudgeTimer = 0;
   UI.nudgeActiveInput = function () {
+    if (nudgeTimer) clearTimeout(nudgeTimer);
+    nudgeTimer = setTimeout(function () { nudgeTimer = 0; doNudge(); }, 140);
+  };
+
+  function doNudge() {
     const el = document.activeElement;
     if (!el || !el.closest) return;
     const scroller = el.closest('.sheet');
@@ -123,7 +142,7 @@
 
     const box = scroller.getBoundingClientRect();
     const r = el.getBoundingClientRect();
-    const pad = 16;
+    const pad = 10;   // 只保证文字不被挡住，尽量少滚一点
 
     /* 历史联想的候选列表也要一起露出来，否则等于白给 */
     const wrap = el.closest('.ac-wrap');
@@ -134,8 +153,14 @@
     let delta = 0;
     if (bottom > box.bottom - pad) delta = bottom - (box.bottom - pad);
     else if (r.top < box.top + pad) delta = r.top - (box.top + pad);
-    if (delta) scroller.scrollTop += delta;
-  };
+    if (!delta) return;
+
+    const top = Math.max(0, scroller.scrollTop + delta);
+    if (typeof scroller.scrollTo === 'function') {
+      try { scroller.scrollTo({ top: top, behavior: 'smooth' }); return; } catch (e) { /* 老浏览器没有平滑滚动 */ }
+    }
+    scroller.scrollTop = top;
+  }
 
   UI.setupKeyboard = function () {
     const vv = global.visualViewport;
@@ -146,9 +171,10 @@
     global.addEventListener('resize', function () { applyKeyboardHeight(); });
     global.addEventListener('orientationchange', function () { setTimeout(function () { applyKeyboardHeight(); }, 260); });
 
-    /* 键盘是动画弹出来的，多补几次才滚得准 */
+    /* 键盘是动画弹出来的，多补几次才滚得准；
+       nudgeActiveInput 自己会合并，所以这里多点几次也不会来回跳 */
     document.addEventListener('focusin', function () {
-      [60, 200, 380].forEach(function (ms) {
+      [80, 260, 520].forEach(function (ms) {
         setTimeout(function () { applyKeyboardHeight(); UI.nudgeActiveInput(); }, ms);
       });
     });
@@ -185,6 +211,8 @@
     $$('.tab').forEach((b) => b.addEventListener('click', () => UI.go(b.dataset.tab)));
     $('#btnAdd').addEventListener('click', () => UI.openTxSheet(null));
     $('#btnImport').addEventListener('click', () => UI.openImportSheet());
+    const aiBtn = $('#btnAI');
+    if (aiBtn) aiBtn.addEventListener('click', () => UI.openAiSheet());
     $('#btnTheme').addEventListener('click', async () => {
       const next = document.documentElement.getAttribute('data-theme') === 'dark' ? 'light' : 'dark';
       await Store.updateSettings({ theme: next });

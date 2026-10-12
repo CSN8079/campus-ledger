@@ -168,8 +168,18 @@
     metaBits.push(t.categoryName || '未分类');
     if (t.account) metaBits.push(t.account);
     if (t.item && t.item !== title) metaBits.push(t.item);
+    if (Stats.isVacation(t)) metaBits.push('假期');
     if (t.reimburseStatus === 'pending') metaBits.push('待报销');
-    else if (t.reimburseStatus === 'done') metaBits.push('已报销');
+    else if (t.reimburseStatus === 'done') {
+      const info = Store.reimburseInfo(t);
+      if (info && t.type === 'expense' && info.selfPay > 0) {
+        metaBits.push(info.words.done + ' ' + U.fmtMoney(info.got).slice(1) + '，自付 ' + U.fmtMoney(info.selfPay).slice(1));
+      } else if (info && t.type === 'income' && info.extra > 0 && !t.excludeStat) {
+        metaBits.push(info.words.item + '，多出 ' + U.fmtMoney(info.extra).slice(1) + ' 计入收入');
+      } else {
+        metaBits.push(info ? info.words.done : '已配对');
+      }
+    }
     else if (t.excludeStat) metaBits.push(t.excludeReason || '不计入');
 
     const cls = ['tx'];
@@ -201,8 +211,9 @@
     const keys = Array.from(groups.keys()).sort().reverse();
     keys.forEach((k) => {
       const rows = groups.get(k).slice().sort((a, b) => b.time - a.time);
-      const inc = rows.filter((r) => r.type === 'income' && !r.excludeStat).reduce((s, r) => s + r.amount, 0);
-      const exp = rows.filter((r) => r.type === 'expense' && !r.excludeStat).reduce((s, r) => s + r.amount, 0);
+      /* 用 Stats.counted：只报销一部分的账目，只把自付的那部分算进小计 */
+      const inc = rows.reduce((s, r) => s + (r.type === 'income' ? Stats.counted(r) : 0), 0);
+      const exp = rows.reduce((s, r) => s + (r.type === 'expense' ? Stats.counted(r) : 0), 0);
       const sumTxt = [];
       if (inc) sumTxt.push('收 ¥' + U.fmtMoney(inc).slice(1));
       if (exp) sumTxt.push('支 ¥' + U.fmtMoney(exp).slice(1));
@@ -220,6 +231,94 @@
     });
     return wrap;
   }
+
+  /* ---------------- 折线图（纯 SVG，零依赖） ----------------
+     用来直观看出「钱是花在哪几天的」。传入 Stats.trend 的 buckets。 */
+  UI.lineChart = function (opts) {
+    opts = opts || {};
+    const buckets = opts.buckets || [];
+    const W = 340;
+    const H = 140;
+    const pad = { t: 16, r: 12, b: 24, l: 40 };
+    const iw = W - pad.l - pad.r;
+    const ih = H - pad.t - pad.b;
+    const showIncome = !!opts.showIncome;
+    const NS = 'http://www.w3.org/2000/svg';
+
+    function mk(tag, attrs, text) {
+      const el = document.createElementNS(NS, tag);
+      if (attrs) Object.keys(attrs).forEach(function (k) { el.setAttribute(k, String(attrs[k])); });
+      if (text !== undefined && text !== null) el.textContent = text;
+      return el;
+    }
+    function shortMoney(v) {
+      if (v >= 10000) return (v / 10000).toFixed(1).replace(/\.0$/, '') + '万';
+      if (v >= 1000) return (v / 1000).toFixed(1).replace(/\.0$/, '') + 'k';
+      return String(Math.round(v));
+    }
+
+    const svg = mk('svg', { class: 'line-chart', viewBox: '0 0 ' + W + ' ' + H, role: 'img' });
+    if (buckets.length < 2) return svg;
+
+    const peak = buckets.reduce(function (m, b) { return Math.max(m, b.expense, showIncome ? b.income : 0); }, 0);
+    const top = peak > 0 ? peak : 1;
+    const n = buckets.length;
+    const x = function (i) { return pad.l + (iw * i) / (n - 1); };
+    const y = function (v) { return pad.t + ih - (ih * v) / top; };
+    const path = function (field) {
+      return buckets.map(function (b, i) {
+        return (i ? 'L' : 'M') + x(i).toFixed(1) + ' ' + y(b[field]).toFixed(1);
+      }).join(' ');
+    };
+
+    /* 横向参考线 + 金额刻度 */
+    [0, 0.5, 1].forEach(function (f) {
+      const yy = y(top * f);
+      svg.appendChild(mk('line', { x1: pad.l, y1: yy, x2: pad.l + iw, y2: yy, class: 'lc-grid' }));
+      svg.appendChild(mk('text', { x: pad.l - 6, y: yy + 3.5, class: 'lc-tick', 'text-anchor': 'end' }, shortMoney(top * f)));
+    });
+
+    /* 支出：淡色面积 + 折线 */
+    svg.appendChild(mk('path', {
+      d: path('expense') + ' L' + x(n - 1).toFixed(1) + ' ' + y(0).toFixed(1) +
+         ' L' + x(0).toFixed(1) + ' ' + y(0).toFixed(1) + ' Z',
+      class: 'lc-area'
+    }));
+    svg.appendChild(mk('path', { d: path('expense'), class: 'lc-line lc-expense' }));
+    if (showIncome) svg.appendChild(mk('path', { d: path('income'), class: 'lc-line lc-income' }));
+
+    /* 数据点：点太多就不画了，免得糊成一团 */
+    if (n <= 16) {
+      buckets.forEach(function (b, i) {
+        svg.appendChild(mk('circle', { cx: x(i).toFixed(1), cy: y(b.expense).toFixed(1), r: 2.6, class: 'lc-dot lc-expense' }));
+        if (showIncome && b.income > 0) {
+          svg.appendChild(mk('circle', { cx: x(i).toFixed(1), cy: y(b.income).toFixed(1), r: 2.2, class: 'lc-dot lc-income' }));
+        }
+      });
+    }
+
+    /* 最高那天标个数字 */
+    let maxI = 0;
+    buckets.forEach(function (b, i) { if (b.expense > buckets[maxI].expense) maxI = i; });
+    if (buckets[maxI].expense > 0) {
+      const anchor = maxI >= n - 2 ? 'end' : (maxI <= 1 ? 'start' : 'middle');
+      svg.appendChild(mk('text', {
+        x: x(maxI).toFixed(1), y: Math.max(11, y(buckets[maxI].expense) - 7).toFixed(1),
+        class: 'lc-peak', 'text-anchor': anchor
+      }, U.fmtMoney(buckets[maxI].expense)));
+    }
+
+    /* 横轴日期：最多 5 个标签 */
+    const step = Math.max(1, Math.ceil(n / 5));
+    buckets.forEach(function (b, i) {
+      if (i % step !== 0 && i !== n - 1) return;
+      svg.appendChild(mk('text', {
+        x: x(i).toFixed(1), y: H - 7, class: 'lc-x',
+        'text-anchor': i === 0 ? 'start' : (i === n - 1 ? 'end' : 'middle')
+      }, b.label));
+    });
+    return svg;
+  };
 
   /* ---------------- 概览 ---------------- */
   UI.renderHome = function () {
@@ -245,6 +344,62 @@
       U.el('div', { class: 'hero-sub', style: { marginTop: '10px' }, text: '共 ' + inc.count + ' 笔计入统计' + (exc.count ? '，另有 ' + exc.count + ' 笔已排除' : '') })
     ]);
     view.appendChild(hero);
+
+    /* 节假日提醒（测试版）：开始前 / 结束前提醒，处理完才消失 */
+    const holidaySug = global.Holiday ? global.Holiday.suggestions() : [];
+    holidaySug.slice(0, 2).forEach((s) => {
+      const h = s.holiday;
+      const isBefore = s.kind === 'before';
+      view.appendChild(U.el('div', { class: 'card holiday-card' }, [
+        U.el('div', { class: 'hc-head' }, [
+          U.el('span', { class: 'hc-ico', text: '🗓️' }),
+          U.el('div', { style: { flex: '1', minWidth: '0' } }, [
+            U.el('div', { class: 'hc-t', text: h.name + (isBefore ? ' 快到了' : ' 快结束了') }),
+            U.el('div', { class: 'hc-d', text: (isBefore ? '从 ' + h.start + ' 开始' : '到 ' + h.end + ' 结束') + '（还有 ' + s.left + ' 天）' })
+          ]),
+          U.el('span', { class: 'badge warn', text: '测试版' })
+        ]),
+        U.el('p', { class: 'hc-ask', text: '这段时间要不要不计入统计？（假期里多半不在学校，算进校园生活费不太合适）' }),
+        U.el('div', { class: 'hc-actions' }, [
+          U.el('button', {
+            class: 'btn btn-sm btn-primary', text: '设为假期（不计入统计）',
+            onclick: async () => {
+              await Store.addVacation({ name: h.name, start: h.start, end: h.end });
+              await global.Holiday.mark(h.key, 'done');
+              UI.toast('已把「' + h.name + '」设为不计入统计', 'ok');
+              UI.renderSettings();
+              UI.renderHome();
+            }
+          }),
+          U.el('button', {
+            class: 'btn btn-sm', text: '自己改时间',
+            onclick: () => UI.openVacationSheet({ name: h.name, start: h.start, end: h.end })
+          }),
+          U.el('button', {
+            class: 'btn btn-sm', text: '照常计入',
+            onclick: async () => {
+              await global.Holiday.mark(h.key, 'skip');
+              UI.toast('好的，这段时间照常计入统计', '');
+              UI.renderHome();
+            }
+          })
+        ])
+      ]));
+    });
+
+    /* AI 助手入口：这么重要的功能，别藏在设置里 */
+    if (global.AI) {
+      view.appendChild(U.el('div', { class: 'card ai-entry', onclick: () => UI.openAiSheet() }, [
+        U.el('div', { class: 'ai-entry-ico', text: '✨' }),
+        U.el('div', { class: 'ai-entry-body' }, [
+          U.el('div', { class: 'ai-entry-t', text: '问问 AI 助手' }),
+          U.el('div', { class: 'ai-entry-d', text: global.AI.available()
+            ? '用说话的方式批量整理账目、查这周花了多少'
+            : '点这里填一个 AI 接口（例如 DeepSeek），就能用说话的方式整理账目' })
+        ]),
+        U.el('span', { class: 'ai-entry-go', text: '›' })
+      ]));
+    }
 
     view.appendChild(seg(
       [{ id: 'week', name: '本周' }, { id: 'month', name: '本月' }, { id: 'semester', name: '本学期' }, { id: 'lastMonth', name: '上月' }, { id: 'all', name: '全部' }],
@@ -281,6 +436,26 @@
       U.el('div', { class: 'stat-card' }, [U.el('div', { class: 'k', text: '本周支出' }), U.el('div', { class: 'v', text: U.fmtMoney(weekSum.expense) })]),
       U.el('div', { class: 'stat-card' }, [U.el('div', { class: 'k', text: '本区间日均' }), U.el('div', { class: 'v', text: U.fmtMoney(Stats.dailyAverage(inc, range)) })])
     ]));
+
+    /* 支出走势（折线图）：一眼看出钱是花在哪几天的 */
+    const trend = Stats.trend(full.parts.included, range);
+    if (trend.buckets.length > 1) {
+      const hasIncome = trend.buckets.some((b) => b.income > 0);
+      let maxB = trend.buckets[0];
+      trend.buckets.forEach((b) => { if (b.expense > maxB.expense) maxB = b; });
+      view.appendChild(U.el('div', { class: 'card' }, [
+        U.el('div', { class: 'card-title' }, [
+          U.el('h3', { text: '支出走势' }),
+          U.el('span', { class: 'hint', text: (trend.useMonth ? '按月' : '按天') + '　' + range.label })
+        ]),
+        UI.lineChart({ buckets: trend.buckets, showIncome: hasIncome }),
+        U.el('div', { class: 'chart-legend' }, [
+          U.el('span', { class: 'lg-expense', text: '● 支出' }),
+          hasIncome ? U.el('span', { class: 'lg-income', text: '● 收入' }) : null,
+          U.el('span', { class: 'lg-note', text: maxB.expense > 0 ? '最高 ' + U.fmtMoney(maxB.expense) + '（' + maxB.label + '）' : '这段时间没有支出' })
+        ])
+      ]));
+    }
 
     /* 支出分类 Top */
     const byCat = Stats.byCategory(full.parts.included, 'expense');
@@ -944,7 +1119,8 @@
     view.appendChild(U.el('div', { class: 'card' }, [
       U.el('div', { class: 'card-title' }, [U.el('h3', { text: '报销与「不计入统计」' }), U.el('span', { class: 'hint', text: pending.length + ' 笔待报销' })]),
       U.el('p', { style: { fontSize: '12.5px', color: 'var(--text-soft)', lineHeight: '1.8' } ,
-        text: '把爸爸妈妈或同学报销、代付、借还款、账户互转的账单标记为「不计入统计」后，它们不会进入任何周/月/学期合计，但仍完整保留在明细里。' }),
+        text: '把爸爸妈妈或同学报销、代付、借还款、账户互转的账单标记为「不计入统计」后，它们不会进入任何周/月/学期合计，但仍完整保留在明细里。'
+          + '报销款本身不算收入；只报了一部分时，剩下自己承担的钱仍然算你的支出；报多了，多出来的部分默认算收入（可以在报销面板里关掉）。' }),
       U.el('div', { style: { marginTop: '10px' } }, [
         U.el('button', {
           class: 'btn btn-sm', text: pending.length ? '查看待报销（' + pending.length + '）' : '查看报销记录',
@@ -961,8 +1137,12 @@
     view.appendChild(U.el('div', { class: 'card' }, [
       U.el('div', { class: 'card-title' }, [U.el('h3', { text: '学期设置' }), U.el('span', { class: 'hint', text: Store.semesters().length + ' 个学期' })]),
       U.el('p', { style: { fontSize: '12.5px', color: 'var(--text-soft)' }, text: sem ? '当前学期：' + sem.name + '（' + sem.start + ' ~ ' + sem.end + '）' : '尚未设置学期' }),
-      U.el('div', { style: { display: 'flex', gap: '8px', marginTop: '10px' } }, [
+      U.el('p', { style: { fontSize: '11.5px', color: 'var(--text-faint)', marginTop: '8px', lineHeight: '1.7' },
+        text: '「假期不计入统计」和联网获取节假日还是测试版功能，遇到问题告诉我。' }),
+      U.el('div', { style: { display: 'flex', gap: '8px', marginTop: '10px', flexWrap: 'wrap' } }, [
         U.el('button', { class: 'btn btn-sm', text: '管理学期', onclick: () => UI.openSemesterSheet() }),
+        U.el('button', { class: 'btn btn-sm' + (Store.vacations().length ? ' btn-primary' : ''),
+          text: '假期设置（' + Store.vacations().length + '）', onclick: () => UI.openVacationSheet() }),
         U.el('button', { class: 'btn btn-sm', text: '周起始日：' + (Store.settings.weekStart === 0 ? '周日' : '周一'), onclick: async () => { await Store.updateSettings({ weekStart: Store.settings.weekStart === 0 ? 1 : 0 }); UI.renderSettings(); } })
       ])
     ]));
@@ -1139,6 +1319,7 @@
           text: '填一个 AI 接口（例如 DeepSeek），就能用说话的方式批量整理账目：「把杭州深度求索的充值从其他改成数码」。AI 只给建议，改不改由你点确认。' }),
         U.el('div', { style: { display: 'flex', gap: '8px', flexWrap: 'wrap' } }, [
           U.el('button', { class: 'btn btn-sm btn-primary', text: '打开 AI 助手', onclick: () => UI.openAiSheet() }),
+          U.el('button', { class: 'btn btn-sm', text: '顶栏按钮', onclick: () => { UI.closeSheet(); UI.toast('右上角那个 ✨AI 按钮随时都能打开 AI 助手', 'ok'); } }),
           U.el('button', { class: 'btn btn-sm', text: 'AI 接口设置', onclick: () => UI.openAiSheet({ focusConfig: true }) })
         ]),
         U.el('div', { class: 'sheet-note', text: '接口地址和密钥只保存在这台设备上；发给 AI 的只有分类与来源的统计概况，不会上传每笔账目。' })
@@ -1218,6 +1399,12 @@
     });
 
     const catGrid = U.el('div', { class: 'cat-grid', id: 'txCatGrid' });
+    /* 分类顺序可以自己排：常点的放前面，少点的挪后面 */
+    let catSortMode = false;
+    const catSortBtn = U.el('button', {
+      class: 'btn btn-sm', text: '调整顺序',
+      onclick: () => { catSortMode = !catSortMode; renderCatGrid(); }
+    });
 
     /* 用户如果手动点过分类，就不再自动改；否则套用历史来源的常用分类 */
     let categoryTouched = false;
@@ -1244,11 +1431,31 @@
     function renderCatGrid() {
       U.clear(catGrid);
       const cats = Store.categoriesFor(model.type, false);
+      catSortBtn.textContent = catSortMode ? '完成' : '调整顺序';
+      catSortBtn.className = 'btn btn-sm' + (catSortMode ? ' btn-primary' : '');
       if (!cats.length) {
         catGrid.appendChild(U.el('p', { class: 'sheet-note', text: '还没有分类，请先到「设置 → 账单分类」添加。' }));
         return;
       }
-      cats.forEach((c) => {
+      cats.forEach((c, i) => {
+        if (catSortMode) {
+          /* 排序模式：点 ◀ ▶ 挪位置，立刻保存 */
+          catGrid.appendChild(U.el('div', { class: 'cat-pick is-sorting' }, [
+            U.el('span', { class: 'ci', text: c.icon }),
+            U.el('span', { class: 'cn', text: c.name }),
+            U.el('div', { class: 'cs-move' }, [
+              U.el('button', {
+                class: 'cs-btn', text: '◀', title: '往前挪', disabled: i === 0,
+                onclick: async () => { if (await Store.moveCategoryIn(c.id, -1, Store.categoriesFor(model.type, false))) renderCatGrid(); }
+              }),
+              U.el('button', {
+                class: 'cs-btn', text: '▶', title: '往后挪', disabled: i === cats.length - 1,
+                onclick: async () => { if (await Store.moveCategoryIn(c.id, 1, Store.categoriesFor(model.type, false))) renderCatGrid(); }
+              })
+            ])
+          ]));
+          return;
+        }
         catGrid.appendChild(U.el('button', {
           class: 'cat-pick' + (c.id === model.categoryId ? ' is-active' : ''),
           onclick: () => { categoryTouched = true; model.categoryId = c.id; renderCatGrid(); }
@@ -1294,7 +1501,10 @@
       typeToggle,
       U.el('div', { style: { margin: '16px 0 6px', textAlign: 'center' } }, [amountBox]),
 
-      U.el('div', { class: 'field' }, [U.el('label', { text: '分类' }), catGrid]),
+      U.el('div', { class: 'field' }, [
+        U.el('div', { class: 'label-row' }, [U.el('label', { text: '分类' }), catSortBtn]),
+        catGrid
+      ]),
 
       U.el('div', { class: 'row row-split' }, [
         U.el('div', { class: 'field' }, [U.el('label', { text: '时间' }), UI.dateField({ value: model.time, withTime: true, onChange: (v) => { model.time = v; } })]),
@@ -1354,6 +1564,10 @@
         if (model.account) await Store.updateSettings({ lastAccount: model.account });
         if (isEdit) {
           if (tx.reimburseStatus) payload.reimburseStatus = tx.reimburseStatus;
+          /* 报销相关的数字单独保留，别因为改个备注就丢了 */
+          if (tx.excludeAmount) payload.excludeAmount = tx.excludeAmount;
+          if (tx.reimburseAmount) payload.reimburseAmount = tx.reimburseAmount;
+          if (tx.reimburseGroupId) payload.reimburseGroupId = tx.reimburseGroupId;
           await Store.updateTx(tx.id, payload);
           UI.toast('已保存修改', 'ok');
         } else {
@@ -1384,8 +1598,17 @@
     addRow('时间', U.fmtDateTime(tx.time));
     addRow('备注', tx.note || '—');
     if (tx.tags.length) addRow('标签', tx.tags.join('、'));
-    addRow('统计', tx.excludeStat ? '不计入（' + (tx.excludeReason || '未注明') + '）' : '计入统计');
-    if (tx.reimburseStatus) addRow('报销状态', tx.reimburseStatus === 'pending' ? '待报销' : '已报销');
+    const rbInfo = Store.reimburseInfo(tx);
+    if (tx.excludeStat) addRow('统计', '不计入（' + (tx.excludeReason || '未注明') + '）');
+    else if (Stats.isVacation(tx)) addRow('统计', '假期期间，不计入合计');
+    else if (rbInfo && rbInfo.selfPay > 0) addRow('统计', '只把自己承担的 ' + U.fmtMoney(rbInfo.selfPay) + ' 算进去');
+    else addRow('统计', '计入统计');
+    if (tx.reimburseStatus) addRow('配对状态', tx.reimburseStatus === 'pending' ? '待报销' : (rbInfo ? rbInfo.words.done : '已配对'));
+    if (rbInfo) {
+      addRow(rbInfo.words.amount, U.fmtMoney(rbInfo.got));
+      if (rbInfo.selfPay > 0) addRow('自己承担', U.fmtMoney(rbInfo.selfPay) + '（计入统计）');
+      if (rbInfo.extra > 0) addRow('多出来的', U.fmtMoney(rbInfo.extra) + (tx.type === 'income' && !tx.excludeStat ? '（计入收入）' : '（不计入收入）'));
+    }
     if (tx.source && tx.source !== 'manual') addRow('导入来源', { wechat: '微信支付账单', alipay: '支付宝账单', import: '账单导入' }[tx.source] || tx.source);
     if (tx.externalId) addRow('交易单号', tx.externalId);
 
@@ -1402,18 +1625,34 @@
       { label: '删除', danger: true, onClick: async () => { UI.closeSheet(); const ok = await UI.confirm({ title: '删除账单', message: '确定要删除这笔「' + (tx.counterparty || tx.item || tx.categoryName) + '」吗？此操作不可撤销。', okText: '删除', danger: true }); if (ok) { await Store.removeTx(tx.id); UI.toast('已删除'); } } }
     ];
 
-    if (tx.type === 'expense' && !tx.excludeStat) {
-      actions.unshift({ label: '报销/排除', primary: true, onClick: () => { UI.closeSheet(); setTimeout(() => UI.openExcludeSheet(tx), 320); } });
-    } else if (tx.reimburseStatus === 'pending') {
-      actions.unshift({ label: '收到报销款', primary: true, onClick: () => { UI.closeSheet(); setTimeout(() => UI.openSettleSheet(tx), 320); } });
-    } else if (tx.reimburseGroupId) {
-      actions.unshift({ label: '取消报销并恢复统计', onClick: async () => {
-        const ok = await UI.confirm({ title: '取消报销', message: '将删除配对的报销收入，并把这笔支出恢复为「计入统计」。', okText: '确定' });
+    /* 顺序很重要：已经配过对的，先给「又还了一部分 / 取消配对」，
+       否则部分报销（支出没整笔排除）会被前面的分支抢走，看不到这两个按钮 */
+    if (tx.reimburseGroupId) {
+      const info = Store.reimburseInfo(tx);
+      actions.unshift({ label: '取消配对并恢复统计', onClick: async () => {
+        const n = (info && info.count) || 1;
+        const ok = await UI.confirm({
+          title: '取消配对',
+          message: '会把这一组（' + n + ' 笔垫付 + 收到的钱）一起恢复成「计入统计」，配对记录删掉。',
+          okText: '确定'
+        });
         UI.closeSheet();
         if (ok) { await Store.cancelReimburse(tx.id); UI.toast('已恢复计入统计', 'ok'); }
       } });
+      if (tx.type === 'expense') {
+        actions.unshift({ label: '又还了一部分 / 改金额', primary: true, onClick: () => { UI.closeSheet(); setTimeout(() => UI.openSettleSheet(tx, false, { reason: (info || {}).reason }), 320); } });
+      }
+    } else if (tx.type === 'expense' && !tx.excludeStat) {
+      actions.unshift({ label: '报销/排除', primary: true, onClick: () => { UI.closeSheet(); setTimeout(() => UI.openExcludeSheet(tx), 320); } });
+    } else if (tx.reimburseStatus === 'pending') {
+      actions.unshift({ label: '收到报销款', primary: true, onClick: () => { UI.closeSheet(); setTimeout(() => UI.openSettleSheet(tx), 320); } });
+    } else if (tx.excludeStat && tx.type === 'expense') {
+      /* 代付、借出去的钱：对方还回来了，配对一下，两笔都不计入统计 */
+      const words = Store.pairWords(tx.excludeReason);
+      actions.unshift({ label: '恢复计入统计', onClick: async () => { await Store.updateTx(tx.id, { excludeStat: false, excludeReason: '', excludeAmount: 0 }); UI.closeSheet(); UI.toast('已恢复计入统计', 'ok'); } });
+      actions.unshift({ label: words.act, primary: true, onClick: () => { UI.closeSheet(); setTimeout(() => UI.openSettleSheet(tx, false, { reason: tx.excludeReason }), 320); } });
     } else if (tx.excludeStat) {
-      actions.unshift({ label: '恢复计入统计', primary: true, onClick: async () => { await Store.updateTx(tx.id, { excludeStat: false, excludeReason: '' }); UI.closeSheet(); UI.toast('已恢复计入统计', 'ok'); } });
+      actions.unshift({ label: '恢复计入统计', primary: true, onClick: async () => { await Store.updateTx(tx.id, { excludeStat: false, excludeReason: '', excludeAmount: 0 }); UI.closeSheet(); UI.toast('已恢复计入统计', 'ok'); } });
     }
 
     UI.openSheet({ title: '账单详情', body: body, actions: actions });
@@ -1437,57 +1676,402 @@
         })
       ]));
     });
-    UI.openSheet({ title: '标记为不计入统计', body: body });
+    UI.openSheet({
+      title: '标记为不计入统计', body: body,
+      note: '代付、借出去的钱以后对方还你了，在账单详情里点「收回来了」就能配对，两笔都不会计入统计。'
+    });
   };
 
   /* 待报销 -> 收到报销款 */
-  UI.openSettleSheet = function (tx, asMarkOnly) {
+  UI.openSettleSheet = function (tx, asMarkOnly, opts) {
+    opts = opts || {};
+    /* 报销 / 收回垫付 / 收回借款，用的是同一套配对，只是用词不同 */
+    const reason = String(opts.reason || tx.excludeReason || '报销').trim() || '报销';
+    const words = Store.pairWords(reason);
+    const verb = words.done === '已报销' ? '报销' : '收回';
     const body = U.el('div');
     const amountInput = U.el('input', { class: 'input', type: 'text', inputmode: 'decimal', value: String(tx.amount) });
-    const who = U.el('input', { class: 'input', placeholder: '例如：爸爸、妈妈、宿舍同学', value: tx.counterparty ? '' : '' });
+    const who = U.el('input', { class: 'input', placeholder: '例如：爸爸、妈妈、宿舍同学', value: '' });
     const when = UI.dateField({ value: U.toISODate(new Date()), withTime: false });
     const accSel = U.el('select', { class: 'select' });
     ['微信', '支付宝', '银行卡', '现金', '其他'].forEach((a) => accSel.appendChild(U.el('option', { value: a, text: a, selected: a === '微信' })));
 
+    /* ---------------- 这笔钱抵消哪些垫付 ----------------
+       一次转账可以抵消好几笔垫付：被抵消的那些不计入统计，
+       没抵消到的仍然算自己花的钱。 */
+    const pick = new Set([tx.id]);
+    let candidates = [];
+    if (!asMarkOnly) {
+      candidates = Store.reimburseCandidates(tx.id);
+      /* 已经配过对的（改金额 / 又还了一部分）只动这一笔；
+         没配过对的，默认把「待报销」「代付/借还款」这些一起勾上，一次转账一笔勾销 */
+      if (!tx.reimburseGroupId) {
+        candidates.forEach(function (c) {
+          if (c.reimburseStatus === 'pending' || (c.excludeStat && !c.reimburseGroupId)) pick.add(c.id);
+        });
+      }
+    }
+
+    function pickedList() {
+      return Array.from(pick)
+        .map(function (id) { return Store.getTx(id); })
+        .filter(Boolean)
+        .sort(function (a, b) { return a.time - b.time; });
+    }
+    function pickedTotal() {
+      return U.round2(pickedList().reduce(function (s, t) { return s + t.amount; }, 0));
+    }
+
+    /* 到账多少会影响统计口径，这里实时算给用户看 */
+    let countExtra = true;   // 对方多给的部分要不要算收入
+    const preview = U.el('div', { class: 'sheet-note', style: { margin: '8px 0 0' } });
+    const extraSwitch = U.el('button', {
+      class: 'switch is-on',
+      onclick: (e) => { countExtra = !countExtra; e.target.classList.toggle('is-on', countExtra); renderPreview(); }
+    });
+    const extraRow = U.el('div', { class: 'switch-row', style: { display: 'none' } }, [
+      U.el('div', { class: 'sr-body' }, [
+        U.el('div', { class: 'sr-title', text: '多出来的部分算收入' }),
+        U.el('div', { class: 'sr-desc', text: '给的钱比垫付的还多时，多出来的默认计入收入；关掉就当作没有这笔钱' })
+      ]),
+      extraSwitch
+    ]);
+
+    function renderPreview() {
+      const got = U.round2(Math.abs(U.parseAmount(amountInput.value)));
+      const total = pickedTotal();
+      if (!pick.size) { preview.textContent = '至少要选一笔垫付的支出'; extraRow.style.display = 'none'; return; }
+      if (!got) { preview.textContent = '到账金额要大于 0'; extraRow.style.display = 'none'; return; }
+      const covered = U.round2(Math.min(got, total));
+      const selfPay = U.round2(Math.max(0, total - got));
+      const extra = U.round2(Math.max(0, got - total));
+      const head = '选中 ' + pick.size + ' 笔，共 ' + U.fmtMoney(total) + '。';
+      if (extra > 0) {
+        preview.textContent = head + '这笔钱 ' + U.fmtMoney(got) + ' 把选中的全部抵消（其中 ' + U.fmtMoney(covered) +
+          ' 不计入统计），多出来的 ' + U.fmtMoney(extra) + (countExtra ? ' 会计入收入。' : ' 也不算收入。');
+        extraRow.style.display = '';
+      } else if (selfPay > 0) {
+        preview.textContent = head + '这笔钱 ' + U.fmtMoney(got) + ' 抵消 ' + U.fmtMoney(covered) +
+          '（不计入统计）；没抵消到的 ' + U.fmtMoney(selfPay) + ' 仍然算你自己的支出。';
+        extraRow.style.display = 'none';
+      } else {
+        preview.textContent = head + '正好抵完：选中的这些和' + verb + '的钱都不计入统计。';
+        extraRow.style.display = 'none';
+      }
+    }
+    amountInput.addEventListener('input', renderPreview);
+
+    /* 勾选清单 */
+    const pickBox = U.el('div', { class: 'pick-list' });
+    function renderPick() {
+      U.clear(pickBox);
+      if (!candidates.length) {
+        pickBox.appendChild(U.el('div', { class: 'sheet-note', style: { margin: '0' }, text: '没有其它可以配对的垫付记录' }));
+        return;
+      }
+      candidates.forEach(function (c) {
+        const on = pick.has(c.id);
+        const box = U.el('input', { type: 'checkbox', checked: on });
+        const tag = c.reimburseStatus === 'pending' ? '（待报销）'
+          : ((c.excludeStat && !c.reimburseGroupId) ? '（' + (c.excludeReason || '不计入') + '）' : '');
+        const row = U.el('label', { class: 'pick-row' + (on ? ' is-on' : '') }, [
+          box,
+          U.el('span', { class: 'pr-main', text: U.fmtDateTime(c.time).slice(5) + '　' + (c.counterparty || c.item || '支出') + tag }),
+          U.el('span', { class: 'pr-amt', text: U.fmtMoney(c.amount) })
+        ]);
+        box.addEventListener('change', function () {
+          if (box.checked) pick.add(c.id); else pick.delete(c.id);
+          row.classList.toggle('is-on', box.checked);
+          renderPreview();
+        });
+        pickBox.appendChild(row);
+      });
+    }
+    const quickPick = U.el('div', { style: { display: 'flex', gap: '8px', marginBottom: '8px' } }, [
+      U.el('button', { class: 'btn btn-sm', text: '全选', onclick: () => { candidates.forEach((c) => pick.add(c.id)); renderPick(); renderPreview(); } }),
+      U.el('button', { class: 'btn btn-sm', text: '只留这一笔', onclick: () => { pick.clear(); pick.add(tx.id); renderPick(); renderPreview(); } })
+    ]);
+
     body.appendChild(U.el('p', { style: { fontSize: '13px', color: 'var(--text-soft)', marginBottom: '12px', lineHeight: '1.8' },
       text: asMarkOnly
         ? '先把这笔支出标记为「待报销」，它会立刻从统计中排除。等收到钱时再来配对入账。'
-        : '登记收到的报销款。系统会自动生成一笔「报销」收入，并与原支出配对，两者都不计入统计。' }));
+        : '登记' + (verb === '报销' ? '收到的报销款' : '收回来的钱') +
+          '。一笔转账可以抵消好几笔垫付：被抵消的那些不计入统计，没抵消到的仍然算你的支出；这笔钱本身不算收入。' }));
 
     if (!asMarkOnly) {
-      body.appendChild(U.el('div', { class: 'field' }, [U.el('label', { text: '报销到账金额' }), amountInput]));
-      body.appendChild(U.el('div', { class: 'field' }, [U.el('label', { text: '谁报销的（可选）' }), who]));
+      amountInput.value = String(pickedTotal() || tx.amount);   // 默认按勾选的那些
+      body.appendChild(U.el('div', { class: 'field' }, [
+        U.el('label', { text: '这笔钱抵消哪些垫付？（按时间从早到晚抵消）' }),
+        quickPick, pickBox
+      ]));
+      body.appendChild(U.el('div', { class: 'field' }, [
+        U.el('label', { text: words.amount + '（填实际到账的金额）' }), amountInput
+      ]));
+      body.appendChild(extraRow);
+      body.appendChild(preview);
+      body.appendChild(U.el('div', { class: 'field' }, [U.el('label', { text: '谁' + (verb === '报销' ? '报销的' : '还的') + '（可选）' }), who]));
       body.appendChild(U.el('div', { class: 'row row-split' }, [
         U.el('div', { class: 'field' }, [U.el('label', { text: '到账日期' }), when]),
         U.el('div', { class: 'field' }, [U.el('label', { text: '到账账户' }), accSel])
       ]));
+      renderPick();
+      renderPreview();
     }
 
     UI.openSheet({
-      title: asMarkOnly ? '标记为待报销' : '收到报销款',
+      title: asMarkOnly ? '标记为待报销' : words.title,
       body: body,
-      note: '报销的收入和支出都不会计入本月账单，但仍可在明细中查看。',
+      note: '被抵消的那些不计入统计；这笔钱本身不算收入，只有多出来的部分才算。记录都保留在明细里。',
       actions: [{
         label: asMarkOnly ? '标记待报销' : '确认入账', primary: true, onClick: async () => {
           if (asMarkOnly) {
             await Store.markReimburse(tx.id, '报销');
             UI.closeSheet();
             UI.toast('已标记为待报销', 'ok');
-          } else {
-            const amt = U.parseAmount(amountInput.value);
-            if (!amt) { UI.toast('请填写金额', 'err'); return; }
-            await Store.settleReimburse(tx.id, {
-              amount: amt,
-              time: when.getValue(),
-              account: accSel.value,
-              counterparty: who.value.trim() || '报销',
-              note: '报销款到账'
-            });
-            UI.closeSheet();
-            UI.toast('已生成报销收入并配对', 'ok');
+            return;
           }
+          const ids = Array.from(pick);
+          if (!ids.length) { UI.toast('请至少选一笔垫付的支出', 'err'); return; }
+          const amt = U.round2(Math.abs(U.parseAmount(amountInput.value)));
+          if (!amt) { UI.toast('请填写金额', 'err'); return; }
+          const total = pickedTotal();
+          await Store.settleReimburse(ids, {
+            amount: amt,
+            time: when.getValue(),
+            account: accSel.value,
+            counterparty: who.value.trim() || (verb === '报销' ? '报销' : '还款'),
+            note: words.item + '到账',
+            item: words.item,
+            reason: reason,
+            countExtra: countExtra
+          });
+          UI.closeSheet();
+          if (amt > total) UI.toast('已配对：多出来的 ' + U.fmtMoney(amt - total) + (countExtra ? ' 计入收入' : ' 不算收入'), 'ok');
+          else if (amt < total) UI.toast('已配对：没抵消到的 ' + U.fmtMoney(total - amt) + ' 仍算你的支出', 'ok');
+          else UI.toast('已配对，' + ids.length + ' 笔垫付都不计入统计', 'ok');
         }
       }, { label: '取消', onClick: () => UI.closeSheet() }]
+    });
+  };
+
+  /* ---------------- 假期设置 ---------------- */
+  UI.openVacationSheet = function (prefill) {
+    const body = U.el('div');
+
+    const sw = U.el('button', {
+      class: 'switch' + (Store.settings.vacationExclude !== false ? ' is-on' : ''),
+      onclick: async (e) => {
+        await Store.updateSettings({ vacationExclude: Store.settings.vacationExclude === false });
+        e.target.classList.toggle('is-on', Store.settings.vacationExclude !== false);
+      }
+    });
+    body.appendChild(U.el('div', { class: 'switch-row' }, [
+      U.el('div', { class: 'sr-body' }, [
+        U.el('div', { class: 'sr-title', text: '假期期间不计入统计' }),
+        U.el('div', { class: 'sr-desc', text: '下面这些日期里的账目会留在明细，但不参与周/月/学期的合计' })
+      ]),
+      sw
+    ]));
+
+    const listBox = U.el('div', { style: { marginTop: '6px' } });
+    function renderList() {
+      U.clear(listBox);
+      const vs = Store.vacations().slice().sort((a, b) => String(a.start).localeCompare(String(b.start)));
+      if (!vs.length) {
+        listBox.appendChild(U.el('div', { class: 'sheet-note', text: '还没有假期。在下面加一个寒暑假或国庆的日期区间即可。' }));
+        return;
+      }
+      vs.forEach((v) => {
+        listBox.appendChild(U.el('div', { class: 'cat-row' }, [
+          U.el('div', { class: 'ci', text: '🏖️' }),
+          U.el('div', { class: 'cn' }, [U.el('b', { text: v.name || '假期' }), U.el('small', { text: v.start + ' ~ ' + v.end })]),
+          U.el('button', { class: 'btn btn-sm', text: '编辑', onclick: () => { editing = v; renderForm(); } }),
+          U.el('button', {
+            class: 'btn btn-sm btn-danger', text: '删除',
+            onclick: async () => {
+              const ok = await UI.confirm({ title: '删除假期', message: '确定删除「' + (v.name || '假期') + '」吗？账目不受影响，只是这段时间重新计入统计。', okText: '删除', danger: true });
+              if (ok) { await Store.removeVacation(v.id); editing = null; renderList(); renderForm(); UI.renderSettings(); }
+            }
+          })
+        ]));
+      });
+    }
+
+    /* 从提醒卡片点「自己改时间」进来时，把建议的日期先填好 */
+    let editing = prefill ? { id: '', name: prefill.name || '', start: prefill.start, end: prefill.end } : null;
+    const formBox = U.el('div');
+    function renderForm() {
+      U.clear(formBox);
+      const v = editing || { name: '', start: U.todayISO(), end: U.toISODate(U.addDays(new Date(), 7)) };
+      const nameIn = U.el('input', { class: 'input', placeholder: '例如：寒假、暑假、国庆', value: v.name || '' });
+      const startF = UI.dateField({ value: v.start, withTime: false });
+      const endF = UI.dateField({ value: v.end, withTime: false });
+      formBox.appendChild(U.el('div', { class: 'card tight', style: { marginTop: '12px' } }, [
+        U.el('div', { class: 'field' }, [U.el('label', { text: '叫什么' }), nameIn]),
+        U.el('div', { class: 'row row-split' }, [
+          U.el('div', { class: 'field' }, [U.el('label', { text: '从' }), startF]),
+          U.el('div', { class: 'field' }, [U.el('label', { text: '到' }), endF])
+        ]),
+        U.el('div', { style: { display: 'flex', gap: '8px', marginTop: '10px' } }, [
+          U.el('button', {
+            class: 'btn btn-sm btn-primary', text: (editing && editing.id) ? '保存修改' : '添加假期',
+            onclick: async () => {
+              const start = startF.getValue();
+              const end = endF.getValue();
+              if (!start || !end) { UI.toast('请选择起止日期', 'err'); return; }
+              if (end < start) { UI.toast('结束日期不能早于开始日期', 'err'); return; }
+              const name = nameIn.value.trim() || '假期';
+              const saved = (editing && editing.id)
+                ? await Store.updateVacation(editing.id, { name: name, start: start, end: end })
+                : await Store.addVacation({ name: name, start: start, end: end });
+              editing = null;
+              /* 手动加的这一段如果覆盖了某个节假日提醒，就把它消掉 */
+              if (global.Holiday && saved) {
+                const pending = global.Holiday.suggestions();
+                for (let i = 0; i < pending.length; i++) {
+                  const hh = pending[i].holiday;
+                  if (!(saved.end < hh.start || saved.start > hh.end)) await global.Holiday.mark(hh.key, 'done');
+                }
+              }
+              renderForm();
+              renderList();
+              UI.renderSettings();
+              UI.toast('已保存「' + name + '」', 'ok');
+            }
+          }),
+          editing ? U.el('button', { class: 'btn btn-sm', text: '取消编辑', onclick: () => { editing = null; renderForm(); } }) : null
+        ])
+      ]));
+    }
+
+    /* ---- 从网上获取节假日（测试版）---- */
+    const dataBox = U.el('div');
+    if (global.Holiday) {
+      const H = global.Holiday;
+      const srcIn = U.el('input', { class: 'input', value: H.source() });
+      const dataNote = U.el('div', { class: 'sheet-note', style: { margin: '8px 0 0' } });
+      const setNote = (t, kind) => {
+        dataNote.textContent = t || '';
+        dataNote.style.color = kind === 'err' ? 'var(--expense)' : (kind === 'ok' ? 'var(--income)' : '');
+      };
+      const cachedN = H.cached().length;
+      setNote(cachedN
+        ? '本机已经存了 ' + cachedN + ' 个节假日，跟着设置一起同步，不用每次重取。'
+        : '还没有节假日数据，点下面按钮联网取一次（取不到也可以手动粘贴）。');
+
+      const pickedBox = U.el('div');
+      let fetched = [];
+      const picked = new Set();
+      function renderFetched() {
+        U.clear(pickedBox);
+        if (!fetched.length) return;
+        const list = U.el('div', { class: 'pick-list', style: { marginTop: '8px' } });
+        fetched.forEach((h) => {
+          const on = picked.has(h.key);
+          const box = U.el('input', { type: 'checkbox', checked: on });
+          const row = U.el('label', { class: 'pick-row' + (on ? ' is-on' : '') }, [
+            box,
+            U.el('span', { class: 'pr-main', text: h.name + '　' + h.start + ' ~ ' + h.end })
+          ]);
+          box.addEventListener('change', () => {
+            if (box.checked) picked.add(h.key); else picked.delete(h.key);
+            row.classList.toggle('is-on', box.checked);
+          });
+          list.appendChild(row);
+        });
+        pickedBox.appendChild(list);
+        pickedBox.appendChild(U.el('button', {
+          class: 'btn btn-sm btn-primary btn-block', style: { marginTop: '8px' },
+          text: '把勾选的加进假期',
+          onclick: async () => {
+            let n = 0;
+            for (let i = 0; i < fetched.length; i++) {
+              const h = fetched[i];
+              if (!picked.has(h.key)) continue;
+              if (Store.vacations().some((v) => v.start === h.start && v.end === h.end && v.name === h.name)) continue;
+              await Store.addVacation({ name: h.name, start: h.start, end: h.end });
+              await H.mark(h.key, 'done');
+              n++;
+            }
+            fetched = [];
+            picked.clear();
+            renderFetched();
+            renderList();
+            UI.renderSettings();
+            UI.renderHome();
+            setNote(n ? '已加入 ' + n + ' 个假期' : '这些都已经加过了', n ? 'ok' : '');
+          }
+        }));
+      }
+
+      const doFetch = async () => {
+        H.saveSource(srcIn.value);
+        const y = new Date().getFullYear();
+        setNote('正在获取 ' + y + ' / ' + (y + 1) + ' 年的节假日…');
+        try {
+          const a = await H.fetchYear(y);
+          let b = [];
+          try { b = await H.fetchYear(y + 1); } catch (e) { b = []; }
+          fetched = (a || []).concat(b || []);
+          picked.clear();
+          fetched.forEach((h) => picked.add(h.key));
+          renderFetched();
+          setNote('取到 ' + fetched.length + ' 个假期，确认无误后点下面的按钮加入。', 'ok');
+        } catch (e) {
+          setNote('获取失败：' + e.message + '　可以换个数据源，或者把 JSON 粘贴到下面那一栏。', 'err');
+        }
+      };
+
+      const pasteIn = U.el('textarea', {
+        class: 'input', rows: 3,
+        style: { marginTop: '8px', fontFamily: 'monospace', fontSize: '12px' },
+        placeholder: '取不到时可以把节假日 JSON 粘贴到这里'
+      });
+
+      dataBox.appendChild(U.el('div', { class: 'card tight', style: { marginTop: '12px' } }, [
+        U.el('div', { class: 'card-title' }, [
+          U.el('h3', { text: '节假日数据' }),
+          U.el('span', { class: 'badge warn', text: '测试版' })
+        ]),
+        U.el('p', { style: { fontSize: '12px', color: 'var(--text-soft)', lineHeight: '1.75', margin: '0 0 8px' },
+          text: '联网取一次全国节假日，直接加进下面的假期列表，不用自己一天天填。数据源也可以换成你信任的接口。' }),
+        U.el('div', { class: 'field' }, [U.el('label', { text: '数据源（{year} 会换成具体年份）' }), srcIn]),
+        U.el('div', { style: { display: 'flex', gap: '8px', flexWrap: 'wrap' } }, [
+          U.el('button', { class: 'btn btn-sm btn-primary', text: '从网上获取', onclick: doFetch }),
+          U.el('button', {
+            class: 'btn btn-sm', text: '恢复默认地址',
+            onclick: () => { srcIn.value = H.defaultSource; H.saveSource(H.defaultSource); setNote('已恢复默认数据源'); }
+          }),
+          U.el('button', {
+            class: 'btn btn-sm', text: '解析粘贴的数据',
+            onclick: async () => {
+              try {
+                const merged = await H.parseText(pasteIn.value);
+                fetched = H.cached();
+                picked.clear();
+                fetched.forEach((h) => picked.add(h.key));
+                renderFetched();
+                setNote('解析成功，共 ' + merged.length + ' 个假期，勾选后加入。', 'ok');
+              } catch (e) { setNote('解析失败：' + e.message, 'err'); }
+            }
+          })
+        ]),
+        dataNote,
+        pasteIn,
+        pickedBox
+      ]));
+    }
+
+    renderList();
+    renderForm();
+    body.appendChild(listBox);
+    body.appendChild(dataBox);
+    body.appendChild(formBox);
+
+    UI.openSheet({
+      title: '假期设置',
+      body: body,
+      note: '提前回校、晚走几天都行，日期完全由你定。假期里的账目在明细里照常看得到。'
     });
   };
 
@@ -1720,7 +2304,9 @@
       dedupe: Store.settings.dedupeOnImport,
       // 默认什么都不排除：导入的每一条都计入合计，要排除哪条由用户自己决定
       ignoreMode: 'count',
-      refundMode: 'count'
+      refundMode: 'count',
+      // 文件是银行/微信/支付宝的原始记录，重复时默认用文件里的数据更新原来那一笔
+      dupMode: 'overwrite'
     };
 
     const drop = U.el('div', { class: 'drop' }, [
@@ -1841,6 +2427,13 @@
         optRow('dedupe', '自动去重', '交易单号已存在时标记为重复，默认不导入')
       ]),
 
+      U.el('div', { class: 'section-label', text: '和已有记录重复时' }),
+      U.el('div', { class: 'card tight' }, [
+        modeField('dupMode', '重复的账单怎么处理', [
+          { v: 'overwrite', n: '保留导入的数据' },
+          { v: 'skip', n: '跳过，保留原来的' }
+        ], '文件里是原始记录，时间、商家、交易单号最准。默认把原来那一笔用文件数据更新（你自己选的分类、账户、报销标记都会保留）；选「跳过」则完全不动原来的记录。')
+      ]),
       U.el('div', { class: 'section-label', text: '不计入合计的流水（由你决定）' }),
       U.el('p', { style: { fontSize: '12px', color: 'var(--text-soft)', lineHeight: '1.75', margin: '0 0 8px' },
         text: '默认什么都不排除，导入的每一条都计入合计。想少算某些流水时再自己选，应用不会擅自替你决定。' }),
@@ -1966,7 +2559,12 @@
       U.clear(cell);
 
       if (it.dup) {
-        cell.appendChild(U.el('span', { class: 'badge warn', title: it.dupReason || '', text: '重复' }));
+        const willUpdate = it.dupOf && (UI.state.importOpts || {}).dupMode === 'overwrite';
+        cell.appendChild(U.el('span', {
+          class: 'badge warn',
+          title: (it.dupReason || '') + (it.dupOfLabel ? '（' + it.dupOfLabel + '）' : ''),
+          text: willUpdate ? '重复·用文件数据更新' : '重复'
+        }));
         return;
       }
       if (it.suspect) {
@@ -2058,14 +2656,16 @@
       body: body,
       actions: [
         { label: '导入所选', primary: true, onClick: async () => {
-          const n = await Importer.commit(items);
+          const n = await Importer.commit(items, { dupMode: (UI.state.importOpts || {}).dupMode });
           UI.closeSheet();
           if (n) { UI.toast('已导入 ' + n + ' 笔账单', 'ok'); UI.go('list'); }
           else UI.toast('没有可导入的账单', 'err');
         } },
         { label: '重新选择文件', onClick: () => UI.openImportSheet() }
       ],
-      note: '重复与疑似重复的账单默认都不勾选。导入后可在「明细」里逐条调整分类或标记为不计入统计。'
+      note: (UI.state.importOpts && UI.state.importOpts.dupMode === 'overwrite')
+        ? '勾上重复的那些，会用文件里的时间/金额/商家/单号更新原来那一笔；你自己改过的分类、账户、报销标记都会保留。'
+        : '重复与疑似重复的账单默认都不勾选。导入后可在「明细」里逐条调整分类或标记为不计入统计。'
     });
   }
 
