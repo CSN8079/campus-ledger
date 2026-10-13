@@ -498,6 +498,11 @@ a { color: var(--primary); }
 .ai-entry .ai-entry-d { font-size: 12px; color: var(--text-soft); margin-top: 2px; line-height: 1.6; }
 .ai-entry .ai-entry-go { color: var(--text-faint); font-size: 20px; line-height: 1; }
 
+/* ---------- 待报销的行 ---------- */
+.tx.is-pending { box-shadow: inset 3px 0 0 var(--warn); }
+.tx.is-flash { animation: txFlash 1.1s ease 2; }
+@keyframes txFlash { 0%, 100% { background: transparent; } 50% { background: var(--warn-soft); } }
+
 /* ---------- 折线图 ---------- */
 .line-chart { width: 100%; height: auto; display: block; margin-top: 4px; }
 .line-chart .lc-grid { stroke: var(--line); stroke-width: 1; stroke-dasharray: 3 4; }

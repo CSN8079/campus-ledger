@@ -1420,6 +1420,29 @@
   UI.go('home');
   await wait(320);
 
+  /* ---------- 54. 概览「去处理」直接定位到待报销那一行 ---------- */
+  const catP54 = (Store.categories.find((c) => c.name === '餐饮') || Store.categories[0]).id;
+  const pTx54 = await Store.addTx({ type: 'expense', amount: 33, time: Date.now(), categoryId: catP54, categoryName: '餐饮', account: '微信', counterparty: '待报销定位测试', item: '垫付', source: 'manual' });
+  await Store.markReimburse(pTx54.id, '报销');
+  UI.go('home');
+  await wait(520);
+  ok($('#view-home').textContent.indexOf('待报销') >= 0, '概览有「待报销」提醒卡片');
+  const goBtn54 = $$('#view-home button').filter((b) => b.textContent === '去处理')[0];
+  ok(!!goBtn54, '有「去处理」按钮');
+  if (goBtn54) goBtn54.click();
+  await wait(950);
+  ok($('.tab[data-tab="list"]').classList.contains('is-active'), '点了会跳到明细页');
+  ok($('#view-list').textContent.indexOf('只看待报销') >= 0, '并自动切到「只看待报销」');
+  const rows54 = $$('#view-list .tx.is-pending');
+  ok(rows54.length >= 1, '待报销的那一行就在列表里（' + rows54.length + ' 行）');
+  ok($('#view-list').textContent.indexOf('待报销定位测试') >= 0, '而且是那一笔，不用自己翻');
+  ok($$('#view-list .tx.is-flash').length >= 1, '这些行会闪一下，很显眼');
+  UI.state.list.onlyPending = false;
+  await Store.cancelReimburse(pTx54.id);
+  await Store.removeManyTx([pTx54.id]);
+  UI.go('home');
+  await wait(320);
+
   UI.go('home');
   await wait(250);
 

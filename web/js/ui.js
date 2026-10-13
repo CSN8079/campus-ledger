@@ -183,6 +183,7 @@
     else if (t.excludeStat) metaBits.push(t.excludeReason || '不计入');
 
     const cls = ['tx'];
+    if (t.reimburseStatus === 'pending') cls.push('is-pending');
     if (t.excludeStat) cls.push('is-excluded');
     if (opts.selected) cls.push('is-selected');
 
@@ -419,7 +420,14 @@
         U.el('p', { style: { fontSize: '12.5px', color: 'var(--text-soft)', marginBottom: '10px' }, text: '这些支出已从统计中排除。收到报销款后点一下即可配对入账。' }),
         U.el('button', {
           class: 'btn btn-sm', text: '去处理',
-          onclick: () => { UI.state.list = Object.assign(UI.state.list, { period: 'all', types: ['expense'] }); UI.go('list'); }
+          onclick: () => {
+            /* 直接定位到待报销的那几行，而不是只跳到明细页让用户自己翻 */
+            UI.state.list = Object.assign(UI.state.list, {
+              period: 'all', types: ['expense', 'income'], categoryIds: [], accounts: [],
+              q: '', showHidden: true, hideExcluded: false, onlyPending: true
+            });
+            UI.go('list');
+          }
         })
       ]));
     }
@@ -564,7 +572,7 @@
     U.clear(body);
     const f = UI.state.list;
     const range = Stats.range(f.period, f.custom);
-    const list = Store.query({
+    let list = Store.query({
       from: range.from, to: range.to,
       types: f.types, q: f.q,
       includeExcluded: !f.hideExcluded,
@@ -586,8 +594,30 @@
       body.appendChild(U.el('p', { class: 'sheet-note', style: { marginTop: '8px' }, text: '已有 ' + full.excluded.count + ' 笔（' + U.fmtMoney(full.excluded.expense + full.excluded.income) + '）标记为不计入统计，未包含在上方合计中。' }));
     }
 
+    /* 「只看待报销」：从概览点「去处理」进来时用，省得在长列表里翻 */
+    if (f.onlyPending) {
+      list = list.filter((t) => t.reimburseStatus === 'pending');
+      body.insertBefore(U.el('div', { class: 'chips', style: { margin: '0 0 10px' } }, [
+        U.el('span', { class: 'chip is-active', text: '只看待报销（' + list.length + ' 笔）' }),
+        U.el('button', { class: 'chip', text: '显示全部', onclick: () => { f.onlyPending = false; UI.renderList(); } })
+      ]), body.firstChild);
+    }
+
     body.appendChild(U.el('div', { style: { height: '8px' } }));
-    body.appendChild(txGroups(list, { emptyText: '这个范围内没有符合条件的账单' }));
+    body.appendChild(txGroups(list, {
+      emptyText: f.onlyPending ? '没有待报销的账单了 🎉' : '这个范围内没有符合条件的账单'
+    }));
+
+    if (f.onlyPending && list.length) {
+      /* 滚到第一笔待报销，并让它们闪两下，一眼就能看见 */
+      setTimeout(function () {
+        const rows = document.querySelectorAll('#view-list .tx.is-pending');
+        if (!rows.length) return;
+        rows[0].scrollIntoView({ block: 'center', behavior: 'smooth' });
+        Array.prototype.forEach.call(rows, (r) => r.classList.add('is-flash'));
+        setTimeout(() => Array.prototype.forEach.call(rows, (r) => r.classList.remove('is-flash')), 2600);
+      }, 140);
+    }
   };
 
   /* ---------------- 带历史联想的输入框 ----------------
