@@ -53,16 +53,54 @@
     try { global.AndroidApp.setSyncHost(host || ''); } catch (e) { /* 忽略 */ }
   };
 
-  Sync.guessDeviceName = function () {  /* 把「电脑地址」和「AI 接口地址」一起报给安卓外壳。
+  /* 把「电脑地址」和「AI 接口地址」一起报给安卓外壳。
      外壳只放行白名单里的主机，AI 服务地址不报上去，请求就会被拦掉。 */
   global.updateNativeHosts = function () {
     if (!global.AndroidApp) return;
     Sync.syncHostToNative();
     const ai = global.AI;
-    if (ai && typeof ai.syncHostToNative === "function") ai.syncHostToNative();
+    if (ai && typeof ai.syncHostToNative === 'function') ai.syncHostToNative();
   };
 
+  /* 手机在局域网里广播找电脑。找到就返回 { host, port, password, name }。
+     这样手机上不用手输地址和口令，点一下就能连上。 */
+  Sync.discover = function () {
+    return new Promise(function (resolve, reject) {
+      if (!global.AndroidApp || typeof global.AndroidApp.discoverServer !== 'function') {
+        reject(new Error('这个版本还不支持自动找电脑，先手动填地址吧'));
+        return;
+      }
+      const id = 'pair' + Date.now().toString(36) + Math.random().toString(36).slice(2, 6);
+      global.__pairCallbacks = global.__pairCallbacks || {};
+      const miss = '没找到电脑。确认手机和电脑连的是同一个 WiFi，并在电脑上打开「配对窗口」';
+      const timer = setTimeout(function () {
+        delete global.__pairCallbacks[id];
+        reject(new Error(miss));
+      }, 6000);
+      global.__pairCallbacks[id] = function (b64) {
+        clearTimeout(timer);
+        delete global.__pairCallbacks[id];
+        let text = '';
+        try {
+          const bin = atob(String(b64 || ''));
+          const bytes = new Uint8Array(bin.length);
+          for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
+          text = new TextDecoder('utf-8').decode(bytes);
+        } catch (e) { text = ''; }
+        if (!text) { reject(new Error(miss)); return; }
+        try { resolve(JSON.parse(text)); }
+        catch (e) { reject(new Error('电脑回的内容看不懂，请手动填地址')); }
+      };
+      try { global.AndroidApp.discoverServer(id); }
+      catch (e) {
+        clearTimeout(timer);
+        delete global.__pairCallbacks[id];
+        reject(new Error('发起请求失败：' + e.message));
+      }
+    });
+  };
 
+  Sync.guessDeviceName = function () {
     const ua = String(navigator.userAgent || '');
     if (global.AndroidApp) return '安卓手机';
     if (/Android/i.test(ua)) return '安卓设备';

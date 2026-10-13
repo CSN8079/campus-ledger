@@ -26,6 +26,10 @@ android-src/*.jks
 
 # ---- 自动备份与同步数据（含真实账单，绝不入库）----
 backups/
+
+# ---- 账单导入箱（含真实账单，绝不入库）----
+账单导入箱/
+import-inbox/
 .server.json
 .sync-data.json
 web/data/
