@@ -760,13 +760,20 @@ function lanAddresses() {
   return out;
 }
 
+/* 端口被占用时自动往后找一个能用的。
+   Windows 上 8788 经常被别的程序当作「临时端口」占着（看着没程序在跑，却提示被占用），
+   所以这里不折腾用户，自己往后试：8789、8790… 试到能用为止。 */
+let bindTries = 0;
 server.on('error', (err) => {
-  if (err.code === 'EADDRINUSE') {
-    console.error('\n端口 ' + OPT.port + ' 已被占用。可能记账本已经在运行了，');
-    console.error('直接打开 http://127.0.0.1:' + OPT.port + ' 即可，或换个端口： node tools/serve.js --port 8899\n');
-  } else {
-    console.error('启动失败：' + err.message);
+  if (err && err.code === 'EADDRINUSE' && bindTries < 15) {
+    bindTries++;
+    const busy = OPT.port;
+    OPT.port = busy + 1;
+    console.log('  端口 ' + busy + ' 被占用（很可能是别的程序临时占着），自动改用 ' + OPT.port + ' …');
+    setTimeout(function () { server.listen(OPT.port, OPT.bind); }, 250);
+    return;
   }
+  console.error('启动失败：' + (err && err.message ? err.message : err));
   process.exit(1);
 });
 
