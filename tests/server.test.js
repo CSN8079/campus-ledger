@@ -49,7 +49,8 @@ function tx(id, amount, updatedAt, extra) {
   /* 启动服务器（本机也要求口令，方便测试认证逻辑） */
   const proc = spawn(process.execPath,
     [path.join(ROOT, 'tools', 'serve.js'), '--port', String(PORT), '--password', PW, '--auth-all'],
-    { env: Object.assign({}, process.env, { JZB_CONFIG_FILE: CFG, JZB_DATA_FILE: DATA }), stdio: 'ignore' });
+    { env: Object.assign({}, process.env, { JZB_CONFIG_FILE: CFG, JZB_DATA_FILE: DATA,
+      JZB_INBOX_DIR: path.join(tmp, 'inbox'), JZB_INBOX_INTERVAL: 700 }), stdio: 'ignore' });
 
   let up = false;
   for (let i = 0; i < 60 && !up; i++) {
@@ -258,6 +259,48 @@ function tx(id, amount, updatedAt, extra) {
     j = await res.json();
     eq(res.status, 200, '几次中途断开之后，服务依然存活（这就是「按任意键继续」那个问题）');
     eq(j.ok, true, '接口仍然正常返回');
+    section('10. 手机自动配对（局域网广播）与账单导入箱');
+    res = await api('/api/pair-open', { method: 'POST' });
+    let j10 = await res.json();
+    eq(res.status, 200, '可以在电脑上打开配对窗口');
+    ok(j10.ok && j10.discoverPort > 0, '配对端口是 ' + j10.discoverPort);
+
+    const dgram = require('node:dgram');
+    const reply = await new Promise((resolve) => {
+      const s = dgram.createSocket('udp4');
+      let done = false;
+      const finish = (v) => { if (done) return; done = true; try { s.close(); } catch (e) { /* 忽略 */ } resolve(v); };
+      s.on('message', (m) => finish(String(m)));
+      s.on('error', () => finish(''));
+      s.bind(() => {
+        try { s.setBroadcast(true); s.send(Buffer.from('JIZHANGBEN_DISCOVER'), j10.discoverPort || 8789, '127.0.0.1'); }
+        catch (e) { finish(''); }
+      });
+      setTimeout(() => finish(''), 2500);
+    });
+    ok(!!reply, '手机广播之后能收到电脑的回包');
+    if (reply) {
+      const p10 = JSON.parse(reply);
+      eq(p10.port, PORT, '回包里带着电脑的端口');
+      ok(!!p10.password, '回包里带着口令（手机就不用手输了）');
+      ok(!!p10.host, '回包里带着电脑地址：' + p10.host);
+    }
+
+    /* 账单导入箱：把文件丢进去，电脑自动解析入库 */
+    const inbox = path.join(tmp, 'inbox');
+    fs.mkdirSync(inbox, { recursive: true });
+    fs.copyFileSync(path.join(ROOT, 'tests', 'fixtures', 'alipay-sample.csv'), path.join(inbox, '支付宝账单.csv'));
+    let landed = false;
+    for (let i = 0; i < 30 && !landed; i++) {
+      await sleep(400);
+      res = await api('/api/ping');
+      j = await res.json();
+      if (j.txCount > 2) landed = true;
+    }
+    ok(landed, '丢进导入箱的账单被自动导入（现在 ' + (j ? j.txCount : 0) + ' 条）');
+    await sleep(1200);   // 入库之后才挪文件，等它挪完
+    ok(fs.existsSync(path.join(inbox, '已导入')), '处理过的原文件被挪进「已导入」文件夹');
+
   } catch (e) {
     fail++;
     console.log('\n测试过程中出错：' + e.message);

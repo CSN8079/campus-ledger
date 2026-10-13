@@ -1302,6 +1302,21 @@
             }
           }
         }),
+        U.el('button', {
+          class: 'btn btn-sm', text: '打开配对窗口（2 分钟）',
+          onclick: async (e) => {
+            const btn = e.target;
+            btn.disabled = true;
+            try {
+              const res = await fetch('/api/pair-open', { method: 'POST', credentials: 'include' });
+              const j = await res.json();
+              UI.toast(j && j.ok ? '配对窗口已打开，手机现在可以点「自动找电脑」了' : '打不开配对窗口，请用命令行重启服务', j && j.ok ? 'ok' : 'err');
+            } catch (err) {
+              UI.toast('打不开配对窗口：' + err.message, 'err');
+            }
+            btn.disabled = false;
+          }
+        }),
         U.el('button', { class: 'btn btn-sm', text: '同步设置 / 看进度', onclick: () => UI.openSyncSheet() })
       ]));
       view.appendChild(syncCard);
@@ -2970,6 +2985,32 @@
       }
 
       const card = U.el('div', { class: 'card tight', style: { marginBottom: '12px' } });
+      /* 一键配对：手机广播找电脑，自动把地址和口令填好 */
+      card.appendChild(U.el('button', {
+        class: 'btn btn-sm btn-primary btn-block', style: { marginBottom: '10px' },
+        text: '📶 自动找电脑（同一 WiFi）',
+        onclick: async (e) => {
+          const btn = e.target;
+          btn.disabled = true;
+          btn.textContent = '正在找电脑…';
+          say('正在广播找电脑，请稍等…');
+          try {
+            const found = await Sync.discover();
+            url = 'http://' + found.host + ':' + found.port;
+            urlInput.value = url;
+            if (found.password) { pwd = String(found.password); pwdInput.value = pwd; }
+            commitConfig();
+            say('找到电脑：' + url + (found.name ? '（' + found.name + '）' : '') + '，点「立即同步」即可', 'ok');
+          } catch (err) {
+            say(err.message, 'err');
+          } finally {
+            btn.disabled = false;
+            btn.textContent = '📶 自动找电脑（同一 WiFi）';
+          }
+        }
+      }));
+      card.appendChild(U.el('div', { class: 'sheet-note', style: { margin: '0 0 8px' },
+        text: '手机和电脑连同一个 WiFi 时，点上面这个按钮就能自动填好；电脑上如果没开配对窗口，到「设置 → 与手机同步」里点一下。' }));
       card.appendChild(U.el('div', { class: 'field' }, [U.el('label', { text: '电脑地址' }), urlInput]));
       card.appendChild(U.el('div', { class: 'field' }, [
         U.el('label', { text: '访问口令' + (Sync.config.token ? '（已记住，留空即可）' : '') }),

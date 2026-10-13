@@ -237,6 +237,44 @@ public class MainActivity extends Activity {
             RequestRouting.setAiHost(host);
         }
 
+        /**
+         * 在局域网里广播找电脑（手机点「自动找电脑」时用）。
+         * 找到就把电脑回的那段 JSON 通过 window.__pairCallbacks[id](base64) 交给网页。
+         */
+        @JavascriptInterface
+        public void discoverServer(final String cbId) {
+            new Thread(new Runnable() {
+                @Override
+                public void run() {
+                    String result = "";
+                    java.net.DatagramSocket sock = null;
+                    try {
+                        sock = new java.net.DatagramSocket();
+                        sock.setBroadcast(true);
+                        sock.setSoTimeout(2600);
+                        byte[] probe = "JIZHANGBEN_DISCOVER".getBytes("UTF-8");
+                        sock.send(new java.net.DatagramPacket(probe, probe.length,
+                                java.net.InetAddress.getByName("255.255.255.255"), 8789));
+                        byte[] buf = new byte[2048];
+                        java.net.DatagramPacket res = new java.net.DatagramPacket(buf, buf.length);
+                        sock.receive(res);
+                        result = new String(res.getData(), 0, res.getLength(), "UTF-8");
+                    } catch (Exception e) {
+                        result = "";
+                    } finally {
+                        if (sock != null) { try { sock.close(); } catch (Exception ignore) { } }
+                    }
+                    final String out = result;
+                    runOnUiThread(new Runnable() {
+                        @Override
+                        public void run() {
+                            postPairResult(cbId, out);
+                        }
+                    });
+                }
+            }).start();
+        }
+
         /** 由原生发起一次 GET（取节假日数据用） */
         @JavascriptInterface
         public void httpGet(final String id, final String url, final String headersJson) {
@@ -386,6 +424,19 @@ public class MainActivity extends Activity {
                 Base64.NO_WRAP);
         String js = "(function(){var c=window.__aiCallbacks&&window.__aiCallbacks['" + safeId + "'];"
                 + "if(typeof c==='function'){c(" + status + ",'" + b64 + "');}})()";
+        web.evaluateJavascript(js, null);
+    }
+
+    /** 把「找到的电脑」回调给网页 */
+    private void postPairResult(String cbId, String text) {
+        if (web == null) return;
+        String safeId = (cbId == null) ? "" : cbId.replaceAll("[^A-Za-z0-9_]", "");
+        String b64 = Base64.encodeToString(
+                String.valueOf(text == null ? "" : text)
+                        .getBytes(java.nio.charset.Charset.forName("UTF-8")),
+                Base64.NO_WRAP);
+        String js = "(function(){var c=window.__pairCallbacks&&window.__pairCallbacks['" + safeId + "'];"
+                + "if(typeof c==='function'){c('" + b64 + "');}})()";
         web.evaluateJavascript(js, null);
     }
 

@@ -12,6 +12,7 @@ const path = require('node:path');
 const os = require('node:os');
 const crypto = require('node:crypto');
 const { exec } = require('node:child_process');
+const dgram = require('node:dgram');
 
 const ROOT = path.join(__dirname, '..');
 const WEB_ROOT = path.join(ROOT, 'web');
@@ -96,6 +97,130 @@ function noteLoginFail(ip) {
   rec.count++;
   if (rec.count >= 8) rec.until = Date.now() + 5 * 60 * 1000;
   loginFails.set(ip, rec);
+}
+
+/* ---------------- 手机自动配对 ----------------
+   手机 App 点「自动找电脑」时，会往局域网广播一个探测包，
+   这里回一个带地址和口令的包，手机上就不用手输任何东西。
+   为了不让口令一直在校园网里飘，只在「配对窗口」打开时才回应：
+   服务启动后 5 分钟内自动打开，也可以在电脑网页上点一下重新打开。 */
+const DISCOVER_PORT = Number(process.env.JZB_DISCOVER_PORT || 8789);
+const PROBE = 'JIZHANGBEN_DISCOVER';
+let pairUntil = Date.now() + 5 * 60 * 1000;
+
+function pairWindowOpen() { return Date.now() < pairUntil; }
+function openPairWindow(ms) {
+  const span = ms || 120000;
+  pairUntil = Date.now() + span;
+  return pairUntil;
+}
+
+/* 挑一个「和手机同一个网段」的地址，手机多半能直接连上 */
+function bestAddressFor(peer) {
+  const list = lanAddresses().map((i) => i.address);
+  const p = String(peer || '').split('.');
+  if (p.length === 4) {
+    const same = list.find((a) => a.split('.').slice(0, 3).join('.') === p.slice(0, 3).join('.'));
+    if (same) return same;
+  }
+  return list[0] || '127.0.0.1';
+}
+
+let discoverSock = null;
+function startDiscovery() {
+  try {
+    discoverSock = dgram.createSocket({ type: 'udp4', reuseAddr: true });
+    discoverSock.on('message', (msg, rinfo) => {
+      if (String(msg).indexOf(PROBE) !== 0) return;
+      if (!pairWindowOpen()) {
+        console.log('  [配对] 收到探测，但配对窗口已关闭（在电脑网页上点一下「打开配对窗口」）');
+        return;
+      }
+      const host = bestAddressFor(rinfo.address);
+      const reply = JSON.stringify({
+        app: 'jizhangben', v: 1, host: host, port: OPT.port,
+        password: CONFIG.password, name: os.hostname()
+      });
+      discoverSock.send(Buffer.from(reply, 'utf8'), rinfo.port, rinfo.address);
+      console.log('  [配对] 已把电脑地址 ' + host + ':' + OPT.port + ' 告诉手机（' + rinfo.address + '）');
+    });
+    discoverSock.on('error', (e) => console.warn('  [配对] UDP 用不了：' + e.message + '（不影响其它功能）'));
+    discoverSock.bind(DISCOVER_PORT);
+  } catch (e) {
+    console.warn('  [配对] 启动失败：' + e.message);
+  }
+}
+
+/* ---------------- 账单导入箱 ----------------
+   把微信/支付宝导出的账单文件丢进这个文件夹，电脑会自动解析、去重、
+   合并进数据（重复的用文件里的数据更新），手机下次同步就看到了。 */
+const INBOX_DIR = process.env.JZB_INBOX_DIR || path.join(ROOT, '账单导入箱');
+const INBOX_DONE = path.join(INBOX_DIR, '已导入');
+const INBOX_FAIL = path.join(INBOX_DIR, '解析失败');
+const INBOX_EXT = ['.csv', '.txt', '.xlsx', '.xlsm'];
+const INBOX_INTERVAL = Number(process.env.JZB_INBOX_INTERVAL || 3000);
+const INODE = require('./importer-node.js');
+let inboxBusy = false;
+let inboxReady = false;
+
+function inboxPending() {
+  try {
+    if (!fs.existsSync(INBOX_DIR)) return [];
+    return fs.readdirSync(INBOX_DIR).filter((f) => {
+      const full = path.join(INBOX_DIR, f);
+      try { return fs.statSync(full).isFile() && INBOX_EXT.indexOf(path.extname(f).toLowerCase()) >= 0; }
+      catch (e) { return false; }
+    });
+  } catch (e) { return []; }
+}
+
+async function inboxScanOnce() {
+  if (inboxBusy) return;
+  const names = inboxPending();
+  if (!names.length) return;
+  inboxBusy = true;
+  try {
+    const files = names.map((f) => ({ name: f, buffer: fs.readFileSync(path.join(INBOX_DIR, f)) }));
+    console.log('  [导入箱] 发现 ' + names.length + ' 个账单文件，开始解析…');
+    const state = {
+      tx: Object.keys(SYNC.tx).map((k) => SYNC.tx[k]),
+      categories: Object.keys(SYNC.categories).map((k) => SYNC.categories[k]),
+      settings: SYNC.settings
+    };
+    const out = await INODE.applyFiles(state, files);
+    if (out.changed.length) {
+      mergePayload({ tx: out.changed, categories: out.categories, deviceName: '电脑导入箱' });
+      maybeServerBackup('inbox');
+    }
+    out.summary.files.forEach((f) => {
+      console.log('  [导入箱] ' + f.name + '（' + (f.kind || '账单') + '）：入库 ' + f.count +
+        ' 条，其中重复 ' + f.dup + ' 条、疑似重复 ' + f.suspect + ' 条');
+    });
+    out.summary.failed.forEach((f) => console.log('  [导入箱] ' + f.name + ' 解析失败：' + f.error));
+    console.log('  [导入箱] 完成：新增 ' + out.summary.added + ' 条，更新 ' + out.summary.updated +
+      ' 条，电脑上现在共 ' + Object.keys(SYNC.tx).length + ' 条账目');
+
+    fs.mkdirSync(INBOX_DONE, { recursive: true });
+    fs.mkdirSync(INBOX_FAIL, { recursive: true });
+    const failedNames = out.summary.failed.map((f) => f.name);
+    names.forEach((f) => {
+      const dest = path.join(failedNames.indexOf(f) >= 0 ? INBOX_FAIL : INBOX_DONE, f);
+      try { fs.renameSync(path.join(INBOX_DIR, f), dest); } catch (e) { /* 忽略 */ }
+    });
+    console.log('  [导入箱] 原文件已挪到 ' + path.relative(ROOT, INBOX_DONE) + '/');
+  } catch (e) {
+    console.warn('  [导入箱] 处理失败：' + (e && e.message ? e.message : e));
+  } finally {
+    inboxBusy = false;
+  }
+}
+
+function startInboxWatch() {
+  if (inboxReady) return;
+  inboxReady = true;
+  try { fs.mkdirSync(INBOX_DIR, { recursive: true }); } catch (e) { /* 忽略 */ }
+  setInterval(() => { inboxScanOnce(); }, INBOX_INTERVAL);
+  console.log('  账单导入箱：' + path.relative(ROOT, INBOX_DIR) + '/　（把导出的账单丢进去，自动记账）');
 }
 
 /* ---------------- 同步数据仓库 ---------------- */
@@ -555,6 +680,12 @@ async function handleRequest(req, res) {
         return sendJSON(res, 502, { ok: false, error: '获取失败：' + (e && e.message ? e.message : '未知错误') });
       }
     }
+    /* 打开配对窗口：电脑上点一下，手机就能自动找到这台电脑 */
+    if (urlPath === '/api/pair-open') {
+      const until = openPairWindow(120000);
+      console.log('  [配对] 配对窗口已打开（2 分钟），手机可以点「自动找电脑」了');
+      return sendJSON(res, 200, { ok: true, until: until, port: OPT.port, discoverPort: DISCOVER_PORT });
+    }
     if (urlPath === '/api/logout') {
       res.setHeader('Set-Cookie', COOKIE_NAME + '=; Path=/; Max-Age=0');
       return sendJSON(res, 200, { ok: true });
@@ -667,6 +798,10 @@ server.listen(OPT.port, OPT.bind, () => {
   console.log('');
   console.log('  数据同步：手机 App 里填上面这个手机地址，即可与电脑互相同步数据。');
   console.log('  自动备份：每次同步后会自动在 ' + path.relative(ROOT, BACKUP_DIR) + '/ 留档，最多保留 ' + BACKUP_KEEP + ' 份。');
+  console.log('  自动记账：把微信/支付宝导出的账单丢进「账单导入箱」文件夹，电脑会自动入库。');
+  console.log('  自动配对：手机 App 里点「自动找电脑」即可（启动后 5 分钟内有效，网页上可重新打开窗口）。');
+  startInboxWatch();
+  startDiscovery();
   maybeServerBackup('auto');
   console.log('  按 Ctrl + C 停止服务。');
   console.log('');
