@@ -1075,127 +1075,116 @@
   AI.save();
   await wait(200);
 
-  /* ---------- 45. 报销只报一部分（界面上走一遍） ---------- */
+  /* ---------- 45. 报销：钱从账目里已有的收入抵消（不再手输金额） ---------- */
   const catId45 = (Store.categories.find((c) => c.name === '餐饮') || Store.categories[0]).id;
-  const exp45 = await Store.addTx({
-    type: 'expense', amount: 38, time: Date.now(), categoryId: catId45, categoryName: '餐饮',
-    account: '微信', counterparty: '报销测试商家', item: '测试报销', source: 'manual'
-  });
+  const incCat45 = Store.categories.find((c) => c.type === 'income') || Store.categories[0];
+  const exp45 = await Store.addTx({ type: 'expense', amount: 38, time: Date.now() - 5000, categoryId: catId45, categoryName: '餐饮', account: '微信', counterparty: '报销测试商家', item: '测试报销', source: 'manual' });
+  const got45 = await Store.addTx({ type: 'income', amount: 20, time: Date.now() - 4000, categoryId: incCat45.id, categoryName: incCat45.name, account: '微信', counterparty: '爸爸', item: '转账', source: 'manual' });
   UI.go('list');
-  await wait(300);
+  await wait(320);
   UI.openTxDetail(Store.getTx(exp45.id));
   await wait(450);
   ok($('#sheetRoot').textContent.indexOf('报销/排除') >= 0, '支出详情里有「报销/排除」入口');
   UI.closeSheet();
-  await wait(420);
+  await wait(430);
 
   UI.openSettleSheet(Store.getTx(exp45.id));
-  await wait(480);
-  const amt45 = $('#sheetRoot .field .input');
-  ok(!!amt45, '报销面板里有金额输入框');
-  eq(amt45.value, '38', '报销金额默认就是原支出金额');
-  amt45.value = '20';
-  amt45.dispatchEvent(new Event('input', { bubbles: true }));
-  await wait(250);
-  ok($('#sheetRoot').textContent.indexOf('仍然算你自己的支出') >= 0,
-    '面板实时说明：只报一部分时，差额还算你的支出');
-  ok($('#sheetRoot').textContent.indexOf('不算收入') >= 0, '面板说明这笔钱不算收入');
+  await wait(540);
+  const sheet45 = $('#sheetRoot').textContent;
+  ok(sheet45.indexOf('这笔钱是哪几笔收入进来的') >= 0, '面板里有「这笔钱是哪几笔收入进来的」');
+  ok(sheet45.indexOf('爸爸') >= 0, '列出了账上已有的那笔收入');
+  ok(sheet45.indexOf('报销到账金额') < 0, '不再让用户手输金额');
+  const incomeList45 = $$('#sheetRoot .pick-list')[0];
+  ok(!!incomeList45 && incomeList45.querySelectorAll('input:checked').length === 1, '默认勾上最近到账的那笔收入');
+  ok(sheet45.indexOf('仍然算你自己的支出') >= 0, '实时说明：没抵消到的还算你的支出');
   $$('#sheetRoot .sheet-actions .btn')[0].click();
-  await wait(700);
-
+  await wait(780);
   const after45 = Store.getTx(exp45.id);
   eq(after45.excludeAmount, 20, '抵扣掉 20');
   eq(Stats.counted(after45), 18, '这笔支出只计入自己承担的 18');
-  const inc45 = Store.tx.find((t) => t.reimburseGroupId === after45.reimburseGroupId && t.reimburseRole === 'in');
-  ok(!!inc45, '生成了配对的收入记录');
-  eq(Stats.counted(inc45), 0, '报销到账的 20 元不算收入');
+  eq(Stats.counted(Store.getTx(got45.id)), 0, '这笔收入里垫付返还的部分不算收入');
+  eq(Store.reimburseInfo(after45).incomeCount, 1, '配对信息里记着用了 1 笔收入');
   UI.go('list');
-  await wait(420);
+  await wait(430);
   ok($('#view-list').textContent.indexOf('自付') >= 0, '明细里写明「已报销 …，自付 18.00」');
-  ok($('#view-list').textContent.indexOf('报销测试商家') >= 0, '这笔支出仍然留在明细里');
 
-  /* 后来又全还清了：再进一次面板改成 38 */
-  UI.openTxDetail(Store.getTx(exp45.id));
-  await wait(450);
-  const again45 = $$('#sheetRoot .sheet-actions .btn').filter((b) => b.textContent.indexOf('又还了一部分') >= 0)[0];
-  ok(!!again45, '配对之后可以「又还了一部分 / 改金额」');
-  if (again45) {
-    again45.click();
-    await wait(700);
-    const amt45b = $('#sheetRoot .field .input');
-    amt45b.value = '38';
-    amt45b.dispatchEvent(new Event('input', { bubbles: true }));
-    await wait(220);
-    $$('#sheetRoot .sheet-actions .btn')[0].click();
-    await wait(700);
-    eq(Stats.counted(Store.getTx(exp45.id)), 0, '后来又全还清了：这笔支出不再计入统计');
-    eq(Store.tx.filter((t) => t.reimburseGroupId === Store.getTx(exp45.id).reimburseGroupId).length, 2,
-      '还是两笔，没有多出来一条');
-  }
+  /* 又收到一笔钱：再配一次，之前抵掉的不会被冲掉 */
+  const got45b = await Store.addTx({ type: 'income', amount: 18, time: Date.now() + 1000, categoryId: incCat45.id, categoryName: incCat45.name, account: '微信', counterparty: '爸爸', item: '又给了一些', source: 'manual' });
+  UI.openSettleSheet(Store.getTx(exp45.id));
+  await wait(540);
+  ok($('#sheetRoot').textContent.indexOf('又给了一些') >= 0, '新到的那笔收入可以勾选');
+  $$('#sheetRoot .sheet-actions .btn')[0].click();
+  await wait(780);
+  eq(Stats.counted(Store.getTx(exp45.id)), 0, '两笔加起来把 38 抵完了');
+  eq(Stats.counted(Store.getTx(got45b.id)), 0, '第二笔收入也不算收入');
+  eq(Store.tx.filter((t) => t.reimburseGroupId === Store.getTx(exp45.id).reimburseGroupId).length, 3, '一组 3 条：1 笔垫付 + 2 笔收入');
+
+  /* 取消配对：收入记录要留着 */
+  await Store.cancelReimburse(exp45.id);
+  await wait(200);
+  eq(!!Store.getTx(got45.id), true, '取消后原来的收入记录还在（不再被删掉）');
+  eq(Stats.counted(Store.getTx(got45.id)), 20, '取消后这笔收入恢复成收入');
+  eq(Stats.counted(Store.getTx(exp45.id)), 38, '取消后垫付全额恢复计入');
+  await Store.removeManyTx([exp45.id, got45.id, got45b.id]);
+  await wait(200);
 
   /* ---------- 46. 代付的钱后来收回来了 ---------- */
-  const exp46 = await Store.addTx({
-    type: 'expense', amount: 45, time: Date.now(), categoryId: catId45, categoryName: '餐饮',
-    account: '微信', counterparty: '代付测试同学', item: '帮买书', source: 'manual'
-  });
+  const exp46 = await Store.addTx({ type: 'expense', amount: 45, time: Date.now() - 3000, categoryId: catId45, categoryName: '餐饮', account: '微信', counterparty: '代付测试同学', item: '帮买书', source: 'manual' });
   await Store.updateTx(exp46.id, { excludeStat: true, excludeReason: '代付' });
+  const got46 = await Store.addTx({ type: 'income', amount: 45, time: Date.now() + 2000, categoryId: incCat45.id, categoryName: incCat45.name, account: '微信', counterparty: '同学', item: '还钱', source: 'manual' });
   UI.go('list');
-  await wait(300);
+  await wait(320);
   UI.openTxDetail(Store.getTx(exp46.id));
   await wait(450);
   const backBtn46 = $$('#sheetRoot .sheet-actions .btn').filter((b) => b.textContent === '收回来了')[0];
-  ok(!!backBtn46, '代付的详情里有「收回来了」按钮（不用再手动去恢复统计）');
-  ok($('#sheetRoot').textContent.indexOf('恢复计入统计') >= 0, '同时也保留「恢复计入统计」的入口');
+  ok(!!backBtn46, '代付的详情里有「收回来了」按钮');
   if (backBtn46) backBtn46.click();
-  await wait(750);
+  await wait(780);
   ok($('#sheetRoot').textContent.indexOf('收回垫付的钱') >= 0, '打开的是「收回垫付的钱」面板');
-  ok($('#sheetRoot').textContent.indexOf('收回金额') >= 0, '字段写的是「收回金额」而不是「报销到账金额」');
+  ok($('#sheetRoot').textContent.indexOf('还钱') >= 0, '列出那笔收入的来源');
   $$('#sheetRoot .sheet-actions .btn')[0].click();
-  await wait(750);
-  const after46 = Store.getTx(exp46.id);
-  eq(after46.excludeStat, true, '全部收回后，这笔代付仍然不计入统计');
-  const inc46 = Store.tx.find((t) => t.reimburseGroupId === after46.reimburseGroupId && t.reimburseRole === 'in');
-  ok(!!inc46, '生成了配对的收回记录');
-  eq(inc46.categoryName, '收回代付', '归到「收回代付」分类');
-  eq(Stats.counted(inc46), 0, '收回来的钱不算收入');
+  await wait(780);
+  eq(Store.getTx(exp46.id).excludeStat, true, '全部收回后这笔代付仍然不计入统计');
+  eq(Stats.counted(Store.getTx(got46.id)), 0, '收回来的钱不算收入');
   UI.go('list');
   await wait(420);
   ok($('#view-list').textContent.indexOf('已收回') >= 0, '明细里显示「已收回」');
+  await Store.removeManyTx([exp46.id, got46.id]);
+  await wait(200);
 
-  /* ---------- 47. 一次转账抵消多笔垫付（界面上走一遍） ---------- */
-  for (const pt of Store.pendingReimburse()) { await Store.cancelReimburse(pt.id); }   // 清掉前面遗留的待报销
+  /* ---------- 47. 一次转账抵消多笔垫付（钱来自账上已有的收入） ---------- */
+  for (const pt of Store.pendingReimburse()) { await Store.cancelReimburse(pt.id); }
   await wait(300);
   const now47 = Date.now();
-  const m1 = await Store.addTx({ type: 'expense', amount: 38, time: now47 - 3000, categoryId: catId45, categoryName: '餐饮', account: '微信', counterparty: '垫付甲商家', item: '垫付', source: 'manual' });
-  const m2 = await Store.addTx({ type: 'expense', amount: 60, time: now47 - 2000, categoryId: catId45, categoryName: '餐饮', account: '微信', counterparty: '垫付乙商家', item: '垫付', source: 'manual' });
+  const m1 = await Store.addTx({ type: 'expense', amount: 38, time: now47 - 6000, categoryId: catId45, categoryName: '餐饮', account: '微信', counterparty: '垫付甲商家', item: '垫付', source: 'manual' });
+  const m2 = await Store.addTx({ type: 'expense', amount: 60, time: now47 - 5000, categoryId: catId45, categoryName: '餐饮', account: '微信', counterparty: '垫付乙商家', item: '垫付', source: 'manual' });
   await Store.markReimburse(m1.id, '报销');
   await Store.markReimburse(m2.id, '报销');
+  const inc47 = await Store.addTx({ type: 'income', amount: 150, time: Date.now(), categoryId: incCat45.id, categoryName: incCat45.name, account: '微信', counterparty: '妈妈', item: '一次转给我', source: 'manual' });
   UI.go('list');
   await wait(350);
   UI.openSettleSheet(Store.getTx(m1.id));
-  await wait(520);
-  const rows47 = $$('#sheetRoot .pick-row');
-  ok(rows47.length >= 2, '面板里列出了可以抵消的垫付记录（' + rows47.length + ' 条）');
-  ok($('#sheetRoot').textContent.indexOf('选中 2 笔') >= 0, '默认把两笔待报销的都勾上了');
-  eq($$('#sheetRoot .pick-row input').filter((b) => b.checked).length, 2, '两个勾选框都是选中状态');
-  const amt47 = $('#sheetRoot .field .input');
-  eq(amt47.value, '98', '默认金额就是选中的两笔之和（38 + 60）');
-  amt47.value = '150';
-  amt47.dispatchEvent(new Event('input', { bubbles: true }));
-  await wait(250);
-  ok($('#sheetRoot').textContent.indexOf('多出来的') >= 0, '预览会提示多出来多少钱');
-  ok($('#sheetRoot').textContent.indexOf('计入收入') >= 0, '并说明多出来的计入收入');
+  await wait(560);
+  const lists47 = $$('#sheetRoot .pick-list');
+  eq(lists47.length, 2, '面板里有两张清单：上面的收入、下面的垫付');
+  ok(lists47[0].textContent.indexOf('妈妈') >= 0, '上面列出了那笔收入');
+  eq(lists47[0].querySelectorAll('input:checked').length, 1, '收入默认勾上最近到账的那一笔');
+  const adv47 = Array.prototype.slice.call(lists47[1].querySelectorAll('input'));
+  eq(adv47.filter((b) => b.checked).length, 2, '两笔待报销的垫付默认都勾上了');
+  const txt47 = $('#sheetRoot').textContent;
+  ok(txt47.indexOf('收到 ¥150.00') >= 0, '自动算出收到 150（不用手输）');
+  ok(txt47.indexOf('多出来的') >= 0 && txt47.indexOf('仍算收入') >= 0, '并说明多出来的是收入');
   $$('#sheetRoot .sheet-actions .btn')[0].click();
-  await wait(850);
+  await wait(880);
   eq(Store.getTx(m1.id).excludeStat, true, '垫付甲被抵消，不计入统计');
   eq(Store.getTx(m2.id).excludeStat, true, '垫付乙被抵消，不计入统计');
-  const inc47 = Store.tx.find((t) => t.reimburseGroupId === Store.getTx(m1.id).reimburseGroupId && t.reimburseRole === 'in');
-  ok(!!inc47 && inc47.amount === 150, '生成了一笔 150 的到账记录');
-  eq(Stats.counted(inc47), 52, '只有多出来的 52 元（150 - 98）计入收入');
-  eq(Store.tx.filter((t) => t.reimburseGroupId === inc47.reimburseGroupId).length, 3, '一组 3 条：2 笔垫付 + 1 笔到账');
+  eq(Stats.counted(Store.getTx(inc47.id)), 52, '这笔收入里只有多出来的 52 元算收入（150 - 98）');
+  eq(Store.tx.filter((t) => t.reimburseGroupId === Store.getTx(m1.id).reimburseGroupId).length, 3, '一组 3 条：2 笔垫付 + 1 笔收入');
   UI.go('list');
-  await wait(400);
+  await wait(420);
   ok($('#view-list').textContent.indexOf('垫付甲商家') >= 0, '被抵消的垫付仍然留在明细里');
+  await Store.removeManyTx([m1.id, m2.id, inc47.id]);
+  await wait(250);
 
   /* ---------- 48. 概览有支出走势折线图 ---------- */
   UI.go('home');
@@ -1417,6 +1406,29 @@
   }
   await Store.updateSettings({ holidayData: holBak.data, holidayPrompts: holBak.prompts });
   eq(Store.vacations().filter((v) => v.name === '粘贴测试假').length, 0, '收尾：测试假期已清掉');
+  UI.go('home');
+  await wait(320);
+
+  /* ---------- 54. 概览「去处理」直接定位到待报销那一行 ---------- */
+  const catP54 = (Store.categories.find((c) => c.name === '餐饮') || Store.categories[0]).id;
+  const pTx54 = await Store.addTx({ type: 'expense', amount: 33, time: Date.now(), categoryId: catP54, categoryName: '餐饮', account: '微信', counterparty: '待报销定位测试', item: '垫付', source: 'manual' });
+  await Store.markReimburse(pTx54.id, '报销');
+  UI.go('home');
+  await wait(520);
+  ok($('#view-home').textContent.indexOf('待报销') >= 0, '概览有「待报销」提醒卡片');
+  const goBtn54 = $$('#view-home button').filter((b) => b.textContent === '去处理')[0];
+  ok(!!goBtn54, '有「去处理」按钮');
+  if (goBtn54) goBtn54.click();
+  await wait(950);
+  ok($('.tab[data-tab="list"]').classList.contains('is-active'), '点了会跳到明细页');
+  ok($('#view-list').textContent.indexOf('只看待报销') >= 0, '并自动切到「只看待报销」');
+  const rows54 = $$('#view-list .tx.is-pending');
+  ok(rows54.length >= 1, '待报销的那一行就在列表里（' + rows54.length + ' 行）');
+  ok($('#view-list').textContent.indexOf('待报销定位测试') >= 0, '而且是那一笔，不用自己翻');
+  ok($$('#view-list .tx.is-flash').length >= 1, '这些行会闪一下，很显眼');
+  UI.state.list.onlyPending = false;
+  await Store.cancelReimburse(pTx54.id);
+  await Store.removeManyTx([pTx54.id]);
   UI.go('home');
   await wait(320);
 

@@ -183,6 +183,7 @@
     else if (t.excludeStat) metaBits.push(t.excludeReason || '不计入');
 
     const cls = ['tx'];
+    if (t.reimburseStatus === 'pending') cls.push('is-pending');
     if (t.excludeStat) cls.push('is-excluded');
     if (opts.selected) cls.push('is-selected');
 
@@ -419,7 +420,14 @@
         U.el('p', { style: { fontSize: '12.5px', color: 'var(--text-soft)', marginBottom: '10px' }, text: '这些支出已从统计中排除。收到报销款后点一下即可配对入账。' }),
         U.el('button', {
           class: 'btn btn-sm', text: '去处理',
-          onclick: () => { UI.state.list = Object.assign(UI.state.list, { period: 'all', types: ['expense'] }); UI.go('list'); }
+          onclick: () => {
+            /* 直接定位到待报销的那几行，而不是只跳到明细页让用户自己翻 */
+            UI.state.list = Object.assign(UI.state.list, {
+              period: 'all', types: ['expense', 'income'], categoryIds: [], accounts: [],
+              q: '', showHidden: true, hideExcluded: false, onlyPending: true
+            });
+            UI.go('list');
+          }
         })
       ]));
     }
@@ -564,7 +572,7 @@
     U.clear(body);
     const f = UI.state.list;
     const range = Stats.range(f.period, f.custom);
-    const list = Store.query({
+    let list = Store.query({
       from: range.from, to: range.to,
       types: f.types, q: f.q,
       includeExcluded: !f.hideExcluded,
@@ -586,8 +594,30 @@
       body.appendChild(U.el('p', { class: 'sheet-note', style: { marginTop: '8px' }, text: '已有 ' + full.excluded.count + ' 笔（' + U.fmtMoney(full.excluded.expense + full.excluded.income) + '）标记为不计入统计，未包含在上方合计中。' }));
     }
 
+    /* 「只看待报销」：从概览点「去处理」进来时用，省得在长列表里翻 */
+    if (f.onlyPending) {
+      list = list.filter((t) => t.reimburseStatus === 'pending');
+      body.insertBefore(U.el('div', { class: 'chips', style: { margin: '0 0 10px' } }, [
+        U.el('span', { class: 'chip is-active', text: '只看待报销（' + list.length + ' 笔）' }),
+        U.el('button', { class: 'chip', text: '显示全部', onclick: () => { f.onlyPending = false; UI.renderList(); } })
+      ]), body.firstChild);
+    }
+
     body.appendChild(U.el('div', { style: { height: '8px' } }));
-    body.appendChild(txGroups(list, { emptyText: '这个范围内没有符合条件的账单' }));
+    body.appendChild(txGroups(list, {
+      emptyText: f.onlyPending ? '没有待报销的账单了 🎉' : '这个范围内没有符合条件的账单'
+    }));
+
+    if (f.onlyPending && list.length) {
+      /* 滚到第一笔待报销，并让它们闪两下，一眼就能看见 */
+      setTimeout(function () {
+        const rows = document.querySelectorAll('#view-list .tx.is-pending');
+        if (!rows.length) return;
+        rows[0].scrollIntoView({ block: 'center', behavior: 'smooth' });
+        Array.prototype.forEach.call(rows, (r) => r.classList.add('is-flash'));
+        setTimeout(() => Array.prototype.forEach.call(rows, (r) => r.classList.remove('is-flash')), 2600);
+      }, 140);
+    }
   };
 
   /* ---------------- 带历史联想的输入框 ----------------
@@ -1705,40 +1735,42 @@
     const words = Store.pairWords(reason);
     const verb = words.done === '已报销' ? '报销' : '收回';
     const body = U.el('div');
-    const amountInput = U.el('input', { class: 'input', type: 'text', inputmode: 'decimal', value: String(tx.amount) });
-    const who = U.el('input', { class: 'input', placeholder: '例如：爸爸、妈妈、宿舍同学', value: '' });
-    const when = UI.dateField({ value: U.toISODate(new Date()), withTime: false });
-    const accSel = U.el('select', { class: 'select' });
-    ['微信', '支付宝', '银行卡', '现金', '其他'].forEach((a) => accSel.appendChild(U.el('option', { value: a, text: a, selected: a === '微信' })));
 
-    /* ---------------- 这笔钱抵消哪些垫付 ----------------
-       一次转账可以抵消好几笔垫付：被抵消的那些不计入统计，
-       没抵消到的仍然算自己花的钱。 */
+    /* ---- 要抵消的垫付（自己先出的钱） ---- */
     const pick = new Set([tx.id]);
     let candidates = [];
     if (!asMarkOnly) {
       candidates = Store.reimburseCandidates(tx.id);
-      /* 已经配过对的（改金额 / 又还了一部分）只动这一笔；
-         没配过对的，默认把「待报销」「代付/借还款」这些一起勾上，一次转账一笔勾销 */
       if (!tx.reimburseGroupId) {
         candidates.forEach(function (c) {
           if (c.reimburseStatus === 'pending' || (c.excludeStat && !c.reimburseGroupId)) pick.add(c.id);
         });
       }
     }
-
     function pickedList() {
-      return Array.from(pick)
-        .map(function (id) { return Store.getTx(id); })
-        .filter(Boolean)
+      return Array.from(pick).map(function (id) { return Store.getTx(id); }).filter(Boolean)
         .sort(function (a, b) { return a.time - b.time; });
     }
     function pickedTotal() {
       return U.round2(pickedList().reduce(function (s, t) { return s + t.amount; }, 0));
     }
 
-    /* 到账多少会影响统计口径，这里实时算给用户看 */
-    let countExtra = true;   // 对方多给的部分要不要算收入
+    /* ---- 收到的钱：从账目里已有的收入里勾（不再手输金额） ---- */
+    const incomePick = new Set();
+    let incomeCands = [];
+    if (!asMarkOnly && Store.incomeCandidates) {
+      incomeCands = Store.incomeCandidates(tx.id);
+      if (incomeCands.length) incomePick.add(incomeCands[0].id);   // 默认选最近到账的那一笔
+    }
+    function pickedIncomes() {
+      return Array.from(incomePick).map(function (id) { return Store.getTx(id); }).filter(Boolean)
+        .sort(function (a, b) { return a.time - b.time; });
+    }
+    function gotTotal() {
+      return U.round2(pickedIncomes().reduce(function (s, t) { return s + t.amount; }, 0));
+    }
+
+    let countExtra = true;
     const preview = U.el('div', { class: 'sheet-note', style: { margin: '8px 0 0' } });
     const extraSwitch = U.el('button', {
       class: 'switch is-on',
@@ -1747,98 +1779,90 @@
     const extraRow = U.el('div', { class: 'switch-row', style: { display: 'none' } }, [
       U.el('div', { class: 'sr-body' }, [
         U.el('div', { class: 'sr-title', text: '多出来的部分算收入' }),
-        U.el('div', { class: 'sr-desc', text: '给的钱比垫付的还多时，多出来的默认计入收入；关掉就当作没有这笔钱' })
+        U.el('div', { class: 'sr-desc', text: '收到的钱比垫付多时，多出来的默认仍算收入；关掉就当作不是收入' })
       ]),
       extraSwitch
     ]);
 
     function renderPreview() {
-      const got = U.round2(Math.abs(U.parseAmount(amountInput.value)));
+      const got = gotTotal();
       const total = pickedTotal();
       if (!pick.size) { preview.textContent = '至少要选一笔垫付的支出'; extraRow.style.display = 'none'; return; }
-      if (!got) { preview.textContent = '到账金额要大于 0'; extraRow.style.display = 'none'; return; }
+      if (!got) {
+        preview.textContent = incomeCands.length ? '请选「这笔钱是哪几笔收入进来的」' : '账上还没有这笔收入：先到「记一笔」里记一笔收入，再回来配对';
+        extraRow.style.display = 'none';
+        return;
+      }
       const covered = U.round2(Math.min(got, total));
       const selfPay = U.round2(Math.max(0, total - got));
       const extra = U.round2(Math.max(0, got - total));
-      const head = '选中 ' + pick.size + ' 笔，共 ' + U.fmtMoney(total) + '。';
+      const head = '收到 ' + U.fmtMoney(got) + '（' + incomePick.size + ' 笔收入），选中的垫付共 ' + U.fmtMoney(total) + '。';
       if (extra > 0) {
-        preview.textContent = head + '这笔钱 ' + U.fmtMoney(got) + ' 把选中的全部抵消（其中 ' + U.fmtMoney(covered) +
-          ' 不计入统计），多出来的 ' + U.fmtMoney(extra) + (countExtra ? ' 会计入收入。' : ' 也不算收入。');
+        preview.textContent = head + '全部抵消（其中 ' + U.fmtMoney(covered) + ' 不计入统计），多出来的 ' + U.fmtMoney(extra) + (countExtra ? ' 仍算收入。' : ' 也不算收入。');
         extraRow.style.display = '';
       } else if (selfPay > 0) {
-        preview.textContent = head + '这笔钱 ' + U.fmtMoney(got) + ' 抵消 ' + U.fmtMoney(covered) +
-          '（不计入统计）；没抵消到的 ' + U.fmtMoney(selfPay) + ' 仍然算你自己的支出。';
+        preview.textContent = head + '抵消 ' + U.fmtMoney(covered) + '（不计入统计）；没抵消到的 ' + U.fmtMoney(selfPay) + ' 仍然算你自己的支出。';
         extraRow.style.display = 'none';
       } else {
-        preview.textContent = head + '正好抵完：选中的这些和' + verb + '的钱都不计入统计。';
+        preview.textContent = head + '正好抵完：选中的这些和这笔收入都不计入统计。';
         extraRow.style.display = 'none';
       }
     }
-    amountInput.addEventListener('input', renderPreview);
 
-    /* 勾选清单 */
-    const pickBox = U.el('div', { class: 'pick-list' });
-    function renderPick() {
-      U.clear(pickBox);
-      if (!candidates.length) {
-        pickBox.appendChild(U.el('div', { class: 'sheet-note', style: { margin: '0' }, text: '没有其它可以配对的垫付记录' }));
-        return;
-      }
-      candidates.forEach(function (c) {
-        const on = pick.has(c.id);
-        const box = U.el('input', { type: 'checkbox', checked: on });
-        const tag = c.reimburseStatus === 'pending' ? '（待报销）'
-          : ((c.excludeStat && !c.reimburseGroupId) ? '（' + (c.excludeReason || '不计入') + '）' : '');
+    /* 一张勾选清单（收入和垫付共用） */
+    function pickList(rows, picked, tagOf) {
+      const box = U.el('div', { class: 'pick-list' });
+      rows.forEach(function (c) {
+        const on = picked.has(c.id);
+        const cb = U.el('input', { type: 'checkbox', checked: on });
         const row = U.el('label', { class: 'pick-row' + (on ? ' is-on' : '') }, [
-          box,
-          U.el('span', { class: 'pr-main', text: U.fmtDateTime(c.time).slice(5) + '　' + (c.counterparty || c.item || '支出') + tag }),
-          U.el('span', { class: 'pr-amt', text: U.fmtMoney(c.amount) })
+          cb,
+          U.el('span', { class: 'pr-main', text: U.fmtDateTime(c.time).slice(5) + '　' +
+            (c.counterparty || c.item || (c.type === 'income' ? '收入' : '支出')) +
+            (c.counterparty && c.item && c.item !== c.counterparty ? '（' + c.item + '）' : '') +
+            (tagOf ? tagOf(c) : '') }),
+          U.el('span', { class: 'pr-amt', text: (c.type === 'income' ? '+' : '-') + U.fmtMoney(c.amount).slice(1) })
         ]);
-        box.addEventListener('change', function () {
-          if (box.checked) pick.add(c.id); else pick.delete(c.id);
-          row.classList.toggle('is-on', box.checked);
+        cb.addEventListener('change', function () {
+          if (cb.checked) picked.add(c.id); else picked.delete(c.id);
+          row.classList.toggle('is-on', cb.checked);
           renderPreview();
         });
-        pickBox.appendChild(row);
+        box.appendChild(row);
       });
+      return box;
     }
-    const quickPick = U.el('div', { style: { display: 'flex', gap: '8px', marginBottom: '8px' } }, [
-      U.el('button', { class: 'btn btn-sm', text: '全选', onclick: () => { candidates.forEach((c) => pick.add(c.id)); renderPick(); renderPreview(); } }),
-      U.el('button', { class: 'btn btn-sm', text: '只留这一笔', onclick: () => { pick.clear(); pick.add(tx.id); renderPick(); renderPreview(); } })
-    ]);
 
     body.appendChild(U.el('p', { style: { fontSize: '13px', color: 'var(--text-soft)', marginBottom: '12px', lineHeight: '1.8' },
       text: asMarkOnly
-        ? '先把这笔支出标记为「待报销」，它会立刻从统计中排除。等收到钱时再来配对入账。'
-        : '登记' + (verb === '报销' ? '收到的报销款' : '收回来的钱') +
-          '。一笔转账可以抵消好几笔垫付：被抵消的那些不计入统计，没抵消到的仍然算你的支出；这笔钱本身不算收入。' }));
+        ? '先把这笔支出标记为「待报销」，它会立刻从统计中排除。等收到钱时再来配对。'
+        : '把「收到的那笔钱」和「自己先垫的钱」配起来。被抵消的垫付不计入统计，没抵消到的仍然算你的支出；这笔收入里属于垫付返还的部分不算收入。' }));
 
     if (!asMarkOnly) {
-      amountInput.value = String(pickedTotal() || tx.amount);   // 默认按勾选的那些
-      body.appendChild(U.el('div', { class: 'field' }, [
-        U.el('label', { text: '这笔钱抵消哪些垫付？（按时间从早到晚抵消）' }),
-        quickPick, pickBox
-      ]));
-      body.appendChild(U.el('div', { class: 'field' }, [
-        U.el('label', { text: words.amount + '（填实际到账的金额）' }), amountInput
-      ]));
+      body.appendChild(U.el('div', { class: 'field' }, [U.el('label', { text: '这笔钱是哪几笔收入进来的？' })]));
+      if (incomeCands.length) body.appendChild(pickList(incomeCands, incomePick));
+      else body.appendChild(U.el('div', { class: 'sheet-note', style: { margin: '0 0 6px' }, text: '账上还没有可以配对的收入记录。先记一笔收入（比如「爸爸 转账」），再回来配对。' }));
+      if (incomeCands.length) body.appendChild(U.el('div', { style: { height: '12px' } }));
+
+      body.appendChild(U.el('div', { class: 'field' }, [U.el('label', { text: '抵消哪些垫付？（按时间从早到晚抵消）' })]));
+      if (candidates.length) {
+        body.appendChild(pickList(candidates, pick, function (c) {
+          return c.reimburseStatus === 'pending' ? '（待报销）' : ((c.excludeStat && !c.reimburseGroupId) ? '（' + (c.excludeReason || '不计入') + '）' : '');
+        }));
+      } else {
+        body.appendChild(U.el('div', { class: 'sheet-note', style: { margin: '0' }, text: '没有其它可以配对的垫付记录' }));
+      }
       body.appendChild(extraRow);
       body.appendChild(preview);
-      body.appendChild(U.el('div', { class: 'field' }, [U.el('label', { text: '谁' + (verb === '报销' ? '报销的' : '还的') + '（可选）' }), who]));
-      body.appendChild(U.el('div', { class: 'row row-split' }, [
-        U.el('div', { class: 'field' }, [U.el('label', { text: '到账日期' }), when]),
-        U.el('div', { class: 'field' }, [U.el('label', { text: '到账账户' }), accSel])
-      ]));
-      renderPick();
       renderPreview();
     }
 
     UI.openSheet({
       title: asMarkOnly ? '标记为待报销' : words.title,
       body: body,
-      note: '被抵消的那些不计入统计；这笔钱本身不算收入，只有多出来的部分才算。记录都保留在明细里。',
+      note: '被抵消的垫付不计入统计；这笔收入里垫付返还的部分也不算收入，只有多出来的才算。记录都保留在明细里。',
       actions: [{
-        label: asMarkOnly ? '标记待报销' : '确认入账', primary: true, onClick: async () => {
+        label: asMarkOnly ? '标记待报销' : '确认配对', primary: true, onClick: async () => {
           if (asMarkOnly) {
             await Store.markReimburse(tx.id, '报销');
             UI.closeSheet();
@@ -1847,23 +1871,15 @@
           }
           const ids = Array.from(pick);
           if (!ids.length) { UI.toast('请至少选一笔垫付的支出', 'err'); return; }
-          const amt = U.round2(Math.abs(U.parseAmount(amountInput.value)));
-          if (!amt) { UI.toast('请填写金额', 'err'); return; }
+          const incomeIds = Array.from(incomePick);
+          if (!incomeIds.length) { UI.toast('请选「这笔钱是哪几笔收入进来的」', 'err'); return; }
+          const got = gotTotal();
           const total = pickedTotal();
-          await Store.settleReimburse(ids, {
-            amount: amt,
-            time: when.getValue(),
-            account: accSel.value,
-            counterparty: who.value.trim() || (verb === '报销' ? '报销' : '还款'),
-            note: words.item + '到账',
-            item: words.item,
-            reason: reason,
-            countExtra: countExtra
-          });
+          await Store.settleReimburse(ids, { incomeIds: incomeIds, reason: reason, countExtra: countExtra });
           UI.closeSheet();
-          if (amt > total) UI.toast('已配对：多出来的 ' + U.fmtMoney(amt - total) + (countExtra ? ' 计入收入' : ' 不算收入'), 'ok');
-          else if (amt < total) UI.toast('已配对：没抵消到的 ' + U.fmtMoney(total - amt) + ' 仍算你的支出', 'ok');
-          else UI.toast('已配对，' + ids.length + ' 笔垫付都不计入统计', 'ok');
+          if (got > total) UI.toast('已配对：多出来的 ' + U.fmtMoney(got - total) + (countExtra ? ' 仍算收入' : ' 也不算收入'), 'ok');
+          else if (got < total) UI.toast('已配对：没抵消到的 ' + U.fmtMoney(total - got) + ' 仍算你的支出', 'ok');
+          else UI.toast('已配对，抵消的部分都不计入统计', 'ok');
         }
       }, { label: '取消', onClick: () => UI.closeSheet() }]
     });
