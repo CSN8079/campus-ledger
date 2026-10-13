@@ -1817,7 +1817,10 @@
         const cb = U.el('input', { type: 'checkbox', checked: on });
         const row = U.el('label', { class: 'pick-row' + (on ? ' is-on' : '') }, [
           cb,
-          U.el('span', { class: 'pr-main', text: U.fmtDateTime(c.time).slice(5) + '　' + (c.counterparty || c.item || (c.type === 'income' ? '收入' : '支出')) + (tagOf ? tagOf(c) : '') }),
+          U.el('span', { class: 'pr-main', text: U.fmtDateTime(c.time).slice(5) + '　' +
+            (c.counterparty || c.item || (c.type === 'income' ? '收入' : '支出')) +
+            (c.counterparty && c.item && c.item !== c.counterparty ? '（' + c.item + '）' : '') +
+            (tagOf ? tagOf(c) : '') }),
           U.el('span', { class: 'pr-amt', text: (c.type === 'income' ? '+' : '-') + U.fmtMoney(c.amount).slice(1) })
         ]);
         cb.addEventListener('change', function () {

@@ -1152,40 +1152,39 @@
   await Store.removeManyTx([exp46.id, got46.id]);
   await wait(200);
 
-  /* ---------- 47. 一次转账抵消多笔垫付（界面上走一遍） ---------- */
-  for (const pt of Store.pendingReimburse()) { await Store.cancelReimburse(pt.id); }   // 清掉前面遗留的待报销
+  /* ---------- 47. 一次转账抵消多笔垫付（钱来自账上已有的收入） ---------- */
+  for (const pt of Store.pendingReimburse()) { await Store.cancelReimburse(pt.id); }
   await wait(300);
   const now47 = Date.now();
-  const m1 = await Store.addTx({ type: 'expense', amount: 38, time: now47 - 3000, categoryId: catId45, categoryName: '餐饮', account: '微信', counterparty: '垫付甲商家', item: '垫付', source: 'manual' });
-  const m2 = await Store.addTx({ type: 'expense', amount: 60, time: now47 - 2000, categoryId: catId45, categoryName: '餐饮', account: '微信', counterparty: '垫付乙商家', item: '垫付', source: 'manual' });
+  const m1 = await Store.addTx({ type: 'expense', amount: 38, time: now47 - 6000, categoryId: catId45, categoryName: '餐饮', account: '微信', counterparty: '垫付甲商家', item: '垫付', source: 'manual' });
+  const m2 = await Store.addTx({ type: 'expense', amount: 60, time: now47 - 5000, categoryId: catId45, categoryName: '餐饮', account: '微信', counterparty: '垫付乙商家', item: '垫付', source: 'manual' });
   await Store.markReimburse(m1.id, '报销');
   await Store.markReimburse(m2.id, '报销');
+  const inc47 = await Store.addTx({ type: 'income', amount: 150, time: Date.now(), categoryId: incCat45.id, categoryName: incCat45.name, account: '微信', counterparty: '妈妈', item: '一次转给我', source: 'manual' });
   UI.go('list');
   await wait(350);
   UI.openSettleSheet(Store.getTx(m1.id));
-  await wait(520);
-  const rows47 = $$('#sheetRoot .pick-row');
-  ok(rows47.length >= 2, '面板里列出了可以抵消的垫付记录（' + rows47.length + ' 条）');
-  ok($('#sheetRoot').textContent.indexOf('选中 2 笔') >= 0, '默认把两笔待报销的都勾上了');
-  eq($$('#sheetRoot .pick-row input').filter((b) => b.checked).length, 2, '两个勾选框都是选中状态');
-  const amt47 = $('#sheetRoot .field .input');
-  eq(amt47.value, '98', '默认金额就是选中的两笔之和（38 + 60）');
-  amt47.value = '150';
-  amt47.dispatchEvent(new Event('input', { bubbles: true }));
-  await wait(250);
-  ok($('#sheetRoot').textContent.indexOf('多出来的') >= 0, '预览会提示多出来多少钱');
-  ok($('#sheetRoot').textContent.indexOf('计入收入') >= 0, '并说明多出来的计入收入');
+  await wait(560);
+  const lists47 = $$('#sheetRoot .pick-list');
+  eq(lists47.length, 2, '面板里有两张清单：上面的收入、下面的垫付');
+  ok(lists47[0].textContent.indexOf('妈妈') >= 0, '上面列出了那笔收入');
+  eq(lists47[0].querySelectorAll('input:checked').length, 1, '收入默认勾上最近到账的那一笔');
+  const adv47 = Array.prototype.slice.call(lists47[1].querySelectorAll('input'));
+  eq(adv47.filter((b) => b.checked).length, 2, '两笔待报销的垫付默认都勾上了');
+  const txt47 = $('#sheetRoot').textContent;
+  ok(txt47.indexOf('收到 ¥150.00') >= 0, '自动算出收到 150（不用手输）');
+  ok(txt47.indexOf('多出来的') >= 0 && txt47.indexOf('仍算收入') >= 0, '并说明多出来的是收入');
   $$('#sheetRoot .sheet-actions .btn')[0].click();
-  await wait(850);
+  await wait(880);
   eq(Store.getTx(m1.id).excludeStat, true, '垫付甲被抵消，不计入统计');
   eq(Store.getTx(m2.id).excludeStat, true, '垫付乙被抵消，不计入统计');
-  const inc47 = Store.tx.find((t) => t.reimburseGroupId === Store.getTx(m1.id).reimburseGroupId && t.reimburseRole === 'in');
-  ok(!!inc47 && inc47.amount === 150, '生成了一笔 150 的到账记录');
-  eq(Stats.counted(inc47), 52, '只有多出来的 52 元（150 - 98）计入收入');
-  eq(Store.tx.filter((t) => t.reimburseGroupId === inc47.reimburseGroupId).length, 3, '一组 3 条：2 笔垫付 + 1 笔到账');
+  eq(Stats.counted(Store.getTx(inc47.id)), 52, '这笔收入里只有多出来的 52 元算收入（150 - 98）');
+  eq(Store.tx.filter((t) => t.reimburseGroupId === Store.getTx(m1.id).reimburseGroupId).length, 3, '一组 3 条：2 笔垫付 + 1 笔收入');
   UI.go('list');
-  await wait(400);
+  await wait(420);
   ok($('#view-list').textContent.indexOf('垫付甲商家') >= 0, '被抵消的垫付仍然留在明细里');
+  await Store.removeManyTx([m1.id, m2.id, inc47.id]);
+  await wait(250);
 
   /* ---------- 48. 概览有支出走势折线图 ---------- */
   UI.go('home');
