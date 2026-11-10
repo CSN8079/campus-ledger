@@ -3188,9 +3188,13 @@
   /* ============================================================
      一、导出报表
      ============================================================ */
-  UI.openExportSheet = function () {
-    let period = 'month';
-    let custom = null;
+  UI.openExportSheet = function (opts) {
+    opts = opts || {};
+    /* 默认跟着「统计」页当前选的周期走，不用再手动选一次 */
+    const statState = UI.state.stats || {};
+    let period = opts.period || statState.period || 'month';
+    let custom = opts.custom || statState.custom || null;
+    if (period === 'custom' && !custom) period = 'month';
     let title = Store.settings.reportTitle || '大学生活记账本';
 
     const seg = U.el('div', { class: 'seg' });
