@@ -169,6 +169,7 @@
     if (t.account) metaBits.push(t.account);
     if (t.item && t.item !== title) metaBits.push(t.item);
     if (Stats.isVacation(t)) metaBits.push('假期');
+    if (t.statsDate) metaBits.push('计入上月');
     if (t.reimburseStatus === 'pending') metaBits.push('待报销');
     else if (t.reimburseStatus === 'done') {
       const info = Store.reimburseInfo(t);
@@ -501,7 +502,8 @@
     const range = Stats.range(f.period, f.custom);
 
     view.appendChild(seg(
-      [{ id: 'week', name: '本周' }, { id: 'month', name: '本月' }, { id: 'semester', name: '本学期' }, { id: 'year', name: '今年' }, { id: 'all', name: '全部' }, { id: 'custom', name: '自定义' }],
+      [{ id: 'week', name: '本周' }, { id: 'month', name: '本月' }, { id: 'lastMonth', name: '上月' },
+       { id: 'semester', name: '本学期' }, { id: 'year', name: '今年' }, { id: 'all', name: '全部' }, { id: 'custom', name: '自定义' }],
       f.period,
       (id) => {
         if (id === 'custom') { UI.pickCustomRange((r) => { f.custom = r; f.period = 'custom'; UI.renderList(); }); return; }
@@ -1101,6 +1103,13 @@
       }
     }
 
+    /* 把之前聊过的内容画出来（历史记录保存在本机） */
+    (AI.log || []).forEach(function (m) {
+      if (m.role === 'user') bubble('me', m.text);
+      else if (m.role === 'ai' && m.text) bubble('ai', m.text);
+    });
+    if ((AI.log || []).length) logBox.scrollTop = logBox.scrollHeight;
+
     renderConfig();
     renderSend();
     say(AI.available() ? '' : '第一次使用：先把 AI 接口地址、密钥、模型填好并保存');
@@ -1416,6 +1425,7 @@
       note: tx ? tx.note : '',
       excludeStat: tx ? tx.excludeStat : false,
       excludeReason: tx ? tx.excludeReason : '',
+      statsDate: tx ? (tx.statsDate || '') : '',
       hidden: tx ? tx.hidden : false
     };
     if (!isEdit) {
@@ -1457,7 +1467,7 @@
     const srcField = UI.autocompleteField({
       field: 'counterparty', value: model.counterparty,
       placeholder: '例如：食堂、美团、爸爸',
-      onChange: (v) => { model.counterparty = v; },
+      onChange: (v) => { model.counterparty = v; maybeAutoStats(); },
       onPick: (v, cat) => {
         model.counterparty = v;
         if (cat && !categoryTouched) {
@@ -1470,7 +1480,7 @@
     const itemField = UI.autocompleteField({
       field: 'item', value: model.item,
       placeholder: '例如：午餐、教材费、地铁',
-      onChange: (v) => { model.item = v; }
+      onChange: (v) => { model.item = v; maybeAutoStats(); }
     });
 
     function renderCatGrid() {
@@ -1517,11 +1527,16 @@
       accountSel.appendChild(U.el('option', { value: a, text: a || '不指定', selected: a === model.account }));
     });
 
-    const reasonSel = U.el('select', {
-      class: 'select', onchange: (e) => { model.excludeReason = e.target.value; }
-    });
+    const reasonChips = U.el('div', { class: 'chips' });
+    function syncReasonChips() {
+      $$('.chip', reasonChips).forEach((b) => b.classList.toggle('is-active', b.textContent === model.excludeReason));
+    }
     D.excludeReasons.forEach((r) => {
-      reasonSel.appendChild(U.el('option', { value: r.name, text: r.name + ' — ' + r.desc, selected: r.name === model.excludeReason }));
+      reasonChips.appendChild(U.el('button', {
+        class: 'chip' + (r.name === model.excludeReason ? ' is-active' : ''),
+        text: r.name, title: r.desc,
+        onclick: () => { model.excludeReason = r.name; syncReasonChips(); }
+      }));
     });
 
     const excludeSwitch = U.el('button', {
@@ -1530,12 +1545,49 @@
         model.excludeStat = !model.excludeStat;
         e.target.classList.toggle('is-on');
         reasonWrap.style.display = model.excludeStat ? '' : 'none';
-        if (model.excludeStat && !model.excludeReason) { model.excludeReason = '报销'; reasonSel.value = '报销'; }
+        if (model.excludeStat && !model.excludeReason) { model.excludeReason = '报销'; syncReasonChips(); }
       }
     });
     const reasonWrap = U.el('div', { class: 'field', style: { display: model.excludeStat ? '' : 'none' } }, [
-      U.el('label', { text: '排除原因' }), reasonSel
+      U.el('label', { text: '排除原因' }), reasonChips,
+      U.el('div', { class: 'sheet-note', style: { margin: '4px 0 0' }, text: '选一个原因，以后在明细里方便筛选' })
     ]);
+
+    /* 花呗还款这类：月初还的是上个月的钱，可以归到上月统计 */
+    let statsTouched = !!model.statsDate;
+    function prevMonthEnd(v) {
+      const d = U.fromISO(v || U.toISODate(new Date()));
+      return U.toISODate(new Date(d.getFullYear(), d.getMonth(), 0));
+    }
+    const statsHint = U.el('div', { class: 'sr-desc', text: '' });
+    function renderStatsHint() {
+      statsHint.textContent = model.statsDate
+        ? '这笔会算进 ' + model.statsDate.slice(0, 7) + '（上月）的支出'
+        : '花呗还款、月初还上个月的钱时打开；会算进上月支出';
+    }
+    const statsSwitch = U.el('button', {
+      class: 'switch' + (model.statsDate ? ' is-on' : ''),
+      onclick: (e) => {
+        statsTouched = true;
+        model.statsDate = model.statsDate ? '' : prevMonthEnd(model.time);
+        e.target.classList.toggle('is-on', !!model.statsDate);
+        renderStatsHint();
+      }
+    });
+    function maybeAutoStats() {
+      if (statsTouched) { renderStatsHint(); return; }
+      const key = (model.counterparty || '') + ' ' + (model.item || '') + ' ' + (model.note || '');
+      const day = U.fromISO(model.time || U.toISODate(new Date())).getDate();
+      const on = /花呗|还款/.test(key) && day <= 10;
+      model.statsDate = on ? prevMonthEnd(model.time) : '';
+      statsSwitch.classList.toggle('is-on', on);
+      renderStatsHint();
+    }
+    const statsRow = U.el('div', { class: 'switch-row' }, [
+      U.el('div', { class: 'sr-body' }, [U.el('div', { class: 'sr-title', text: '计入上月（花呗还款等）' }), statsHint]),
+      statsSwitch
+    ]);
+    maybeAutoStats();
 
     const hideSwitch = U.el('button', {
       class: 'switch' + (model.hidden ? ' is-on' : ''),
@@ -1552,7 +1604,7 @@
       ]),
 
       U.el('div', { class: 'row row-split' }, [
-        U.el('div', { class: 'field' }, [U.el('label', { text: '时间' }), UI.dateField({ value: model.time, withTime: true, onChange: (v) => { model.time = v; } })]),
+        U.el('div', { class: 'field' }, [U.el('label', { text: '时间' }), UI.dateField({ value: model.time, withTime: true, onChange: (v) => { model.time = v; maybeAutoStats(); } })]),
         U.el('div', { class: 'field' }, [U.el('label', { text: '账户' }), accountSel])
       ]),
 
@@ -1567,7 +1619,7 @@
       ]),
       U.el('div', { class: 'field' }, [
         U.el('label', { text: '备注' }),
-        U.el('textarea', { class: 'textarea', placeholder: '可留空', oninput: (e) => { model.note = e.target.value; } }, [document.createTextNode(model.note)])
+        U.el('textarea', { class: 'textarea', placeholder: '可留空', oninput: (e) => { model.note = e.target.value; maybeAutoStats(); } }, [document.createTextNode(model.note)])
       ]),
 
       U.el('div', { class: 'switch-row' }, [
@@ -1578,6 +1630,7 @@
         excludeSwitch
       ]),
       reasonWrap,
+      statsRow,
       U.el('div', { class: 'switch-row' }, [
         U.el('div', { class: 'sr-body' }, [
           U.el('div', { class: 'sr-title', text: '隐藏这笔账单' }),
@@ -1604,7 +1657,8 @@
           note: model.note.trim(),
           excludeStat: model.excludeStat,
           excludeReason: model.excludeStat ? (model.excludeReason || '不计收支') : '',
-          hidden: model.hidden
+          hidden: model.hidden,
+          statsDate: model.statsDate || ''
         };
         if (model.account) await Store.updateSettings({ lastAccount: model.account });
         if (isEdit) {
@@ -1641,6 +1695,7 @@
     addRow('用途（事项）', tx.item || '—');
     addRow('账户', tx.account || '—');
     addRow('时间', U.fmtDateTime(tx.time));
+    if (tx.statsDate) addRow('统计归属', '算进 ' + tx.statsDate.slice(0, 7) + '（上月）的支出');
     addRow('备注', tx.note || '—');
     if (tx.tags.length) addRow('标签', tx.tags.join('、'));
     const rbInfo = Store.reimburseInfo(tx);

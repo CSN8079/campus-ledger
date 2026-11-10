@@ -144,6 +144,7 @@
   await wait(320);
 
   /* ---------- 9. 统计页图表 ---------- */
+  UI.state.stats.period = 'all';   // 样例数据是固定日期，用「全部」避免跟着当前月份失效
   UI.go('stats');
   await wait(300);
   const sv = $('#view-stats');
@@ -152,7 +153,7 @@
   ok(sv.querySelectorAll('.bar-item').length >= 1, '统计页显示分类/来源排行');
   ok(!!sv.querySelector('.trend'), '统计页渲染出趋势图');
 
-  const st = Store.query({ from: Stats.range('month').from, to: Stats.range('month').to });
+  const st = Store.query({ from: Stats.range('all').from, to: Stats.range('all').to });
   const sum = Stats.summarize(st);
   ok(sum.income > 0 && sum.expense > 0, '本月有收入与支出数据用于统计（收 ' + sum.income + ' / 支 ' + sum.expense + '）');
 
@@ -1431,6 +1432,55 @@
   await Store.removeManyTx([pTx54.id]);
   UI.go('home');
   await wait(320);
+
+  /* ---------- 55. 明细「上月」/ 排除原因应用内选项 / 花呗算上月 ---------- */
+  UI.go('list');
+  await wait(380);
+  const listSeg55 = $$('#view-list .seg button').map((b) => b.textContent);
+  ok(listSeg55.indexOf('上月') >= 0, '明细可以直接切「上月」：' + JSON.stringify(listSeg55));
+
+  UI.openTxSheet(null);
+  await wait(540);
+  const exRow55 = $$('#sheetRoot .switch-row').find((r) => r.textContent.indexOf('不计入统计') >= 0);
+  ok(!!exRow55, '表单里有「不计入统计」开关');
+  if (exRow55) exRow55.querySelector('.switch').click();
+  await wait(260);
+  const reasonField55 = $$('#sheetRoot .field').find((f) => f.textContent.indexOf('排除原因') >= 0);
+  ok(!!reasonField55, '打开后出现「排除原因」');
+  ok(reasonField55 && !reasonField55.querySelector('select'), '排除原因不再用系统下拉框');
+  const reasonChips55 = reasonField55 ? Array.prototype.slice.call(reasonField55.querySelectorAll('.chip')).map((b) => b.textContent) : [];
+  ok(['报销', '代付', '借还款', '账户互转', '不计收支'].every((n) => reasonChips55.indexOf(n) >= 0),
+    '五个原因都是应用内选项：' + JSON.stringify(reasonChips55));
+  if (reasonField55) reasonField55.querySelectorAll('.chip')[1].click();
+  await wait(160);
+
+  const statsRow55 = $$('#sheetRoot .switch-row').find((r) => r.textContent.indexOf('计入上月') >= 0);
+  ok(!!statsRow55, '表单里有「计入上月（花呗还款等）」开关');
+  const statsSw55 = statsRow55 ? statsRow55.querySelector('.switch') : null;
+  if (statsSw55) statsSw55.click();
+  await wait(220);
+  ok(statsRow55 && statsRow55.textContent.indexOf('（上月）') >= 0, '打开后会说明算进上月：' + (statsRow55 ? statsRow55.textContent.trim() : '-'));
+
+  const amt55 = $('#sheetRoot .amount-input input');
+  amt55.value = '66';
+  amt55.dispatchEvent(new Event('input', { bubbles: true }));
+  const src55 = $$('#sheetRoot .ac-wrap input.input')[0];
+  src55.value = '花呗';
+  src55.dispatchEvent(new Event('input', { bubbles: true }));
+  const item55 = $$('#sheetRoot .ac-wrap input.input')[1];
+  item55.value = '还款';
+  item55.dispatchEvent(new Event('input', { bubbles: true }));
+  await wait(320);
+  $$('#sheetRoot .sheet-actions .btn')[0].click();
+  await wait(760);
+  const saved55 = Store.tx.filter((t) => t.counterparty === '花呗').sort((a, b) => b.createdAt - a.createdAt)[0];
+  ok(!!saved55, '账单保存成功');
+  ok(!!(saved55 && saved55.statsDate), '保存时带上了「统计归属日期」：' + (saved55 ? saved55.statsDate : '-'));
+  UI.go('list');
+  await wait(420);
+  ok($('#view-list').textContent.indexOf('计入上月') >= 0, '明细里标出了「计入上月」');
+  if (saved55) await Store.removeManyTx([saved55.id]);
+  await wait(250);
 
   UI.go('home');
   await wait(250);

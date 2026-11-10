@@ -54,6 +54,7 @@
       amount: U.round2(Math.abs(U.parseAmount(t.amount))),
       time: time,
       dateKey: U.toISODate(d),
+      statsDate: (t.statsDate && /^[0-9]{4}-[0-9]{2}-[0-9]{2}$/.test(String(t.statsDate))) ? String(t.statsDate).slice(0, 10) : '',
       categoryId: t.categoryId || '',
       categoryName: t.categoryName || '',
       account: t.account || '',
@@ -643,6 +644,21 @@
     return Store.tx.filter((t) => t.reimburseStatus === 'pending');
   };
 
+  Store.statDateKey = function (t) {
+    if (!t) return '';
+    if (t.statsDate && /^[0-9]{4}-[0-9]{2}-[0-9]{2}$/.test(String(t.statsDate))) return String(t.statsDate).slice(0, 10);
+    return t.dateKey || U.toISODate(new Date(t.time));
+  };
+  Store.statTime = function (t) {
+    if (!t) return 0;
+    const k = Store.statDateKey(t);
+    if (!t.statsDate || k === t.dateKey) return t.time;
+    const base = U.fromISO(k);
+    const d = new Date(t.time);
+    base.setHours(d.getHours(), d.getMinutes(), d.getSeconds(), d.getMilliseconds());
+    return base.getTime();
+  };
+
   /* ---------------- 查询 ---------------- */
   /* filter: {from,to,types,categoryIds,accounts,q,includeExcluded,includeHidden,tag,amountMin,amountMax,reimburseStatus} */
   Store.query = function (filter) {
@@ -659,7 +675,8 @@
     const out = [];
     for (let i = 0; i < Store.tx.length; i++) {
       const t = Store.tx[i];
-      if (t.time < from || t.time > to) continue;
+      const statT = Store.statTime(t);
+      if (statT < from || statT > to) continue;
       if (!includeHidden && t.hidden) continue;
       if (!includeExcluded && t.excludeStat) continue;
       if (types && types.indexOf(t.type) < 0) continue;

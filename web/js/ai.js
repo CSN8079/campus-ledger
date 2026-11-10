@@ -16,6 +16,7 @@
 
   const U = global.U, Store = global.Store, Stats = global.Stats;
   const LS_KEY = 'jzb:ai';
+  const HISTORY_KEY = 'jzb:ai-history';
   const WEEK_CN = ['周日', '周一', '周二', '周三', '周四', '周五', '周六'];
 
   const AI = {
@@ -25,7 +26,8 @@
       model: 'deepseek-chat',
       enabled: false
     },
-    messages: [],     // 对话记录，只放在内存里，不落盘
+    messages: [],     // 给模型看的上下文
+    log: [],          // 给用户看的对话记录（会保存下来）
     busy: false,
     lastError: ''
   };
@@ -35,8 +37,16 @@
     try {
       const raw = localStorage.getItem(LS_KEY);
       if (raw) Object.assign(AI.config, JSON.parse(raw));
-    AI.updateNativeHosts();
     } catch (e) { /* 忽略 */ }
+    /* 历史对话：下次打开还在 */
+    try {
+      const hs = JSON.parse(localStorage.getItem(HISTORY_KEY) || 'null');
+      if (hs) {
+        if (Array.isArray(hs.log)) AI.log = hs.log.slice(-40);
+        if (Array.isArray(hs.messages)) AI.messages = hs.messages.slice(-16);
+      }
+    } catch (e) { /* 忽略 */ }
+    AI.updateNativeHosts();
   };
 
   AI.save = function () {
@@ -566,6 +576,10 @@
       }
 
       if (AI.messages.length > 16) AI.messages = AI.messages.slice(-16);
+      AI.log.push({ role: 'user', text: text });
+      AI.log.push({ role: 'ai', text: parsed.reply || '' });
+      if (AI.log.length > 40) AI.log = AI.log.slice(-40);
+      AI.saveHistory();
       return parsed;
     } catch (e) {
       AI.lastError = e && e.message ? e.message : '未知错误';
@@ -576,7 +590,21 @@
     }
   };
 
-  AI.reset = function () { AI.messages = []; };
+  /* 把对话记录存到本机，下次打开还在 */
+  AI.saveHistory = function () {
+    try {
+      localStorage.setItem(HISTORY_KEY, JSON.stringify({
+        log: AI.log.slice(-40),
+        messages: AI.messages.slice(-16)
+      }));
+    } catch (e) { /* 忽略 */ }
+  };
+
+  AI.reset = function () {
+    AI.messages = [];
+    AI.log = [];
+    AI.saveHistory();
+  };
 
   global.AI = AI;
 })(window);

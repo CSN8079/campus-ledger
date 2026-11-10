@@ -377,6 +377,14 @@
         amount: amount,
         time: time,
         dateKey: U.toISODate(new Date(time)),
+        /* 月初的花呗还款：自动算进上月支出 */
+        statsDate: (function () {
+          if (type !== 'expense') return '';
+          if (!/花呗/.test(counterparty + ' ' + item + ' ' + txKind + ' ' + status)) return '';
+          const dd = new Date(time);
+          if (dd.getDate() > 10) return '';
+          return U.toISODate(new Date(dd.getFullYear(), dd.getMonth(), 0));
+        })(),
         categoryId: cat ? cat.id : '',
         categoryName: cat ? cat.name : '',
         account: guessAccount(detect.kind, payMethod),
