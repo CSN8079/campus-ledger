@@ -236,9 +236,15 @@
     ctx.textBaseline = 'alphabetic';
     ctx.fillText(titleText, PAD, 96);
 
-    ctx.font = '28px ' + FONT;
-    ctx.fillStyle = 'rgba(255,255,255,.92)';
-    ctx.fillText(report.label, PAD, 150);
+    /* 时间范围：字号加大、加粗，一眼能看出这份报表是什么时间段的 */
+    let labelSize = 38;
+    ctx.font = 'bold ' + labelSize + 'px ' + FONT;
+    while (labelSize > 24 && ctx.measureText(report.label).width > maxTitleW) {
+      labelSize -= 2;
+      ctx.font = 'bold ' + labelSize + 'px ' + FONT;
+    }
+    ctx.fillStyle = 'rgba(255,255,255,.97)';
+    ctx.fillText(report.label, PAD, 158);
 
     /* ---- 收支卡片 ---- */
     const cardY = CARD_Y, cardH = CARD_H;

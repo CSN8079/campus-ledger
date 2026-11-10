@@ -1482,6 +1482,23 @@
   if (saved55) await Store.removeManyTx([saved55.id]);
   await wait(250);
 
+  /* ---------- 56. 导出报表默认跟随统计页选的周期 ---------- */
+  UI.go('stats');
+  await wait(340);
+  const semBtn56 = $$('#view-stats .seg button').find((b) => b.textContent === '本学期');
+  ok(!!semBtn56, '统计页有「本学期」');
+  if (semBtn56) semBtn56.click();
+  await wait(340);
+  eq(UI.state.stats.period, 'semester', '统计页已经切到「本学期」');
+  UI.openExportSheet();
+  await wait(600);
+  const expSeg56 = $$('#sheetRoot .seg')[0];
+  const active56 = expSeg56 ? Array.prototype.slice.call(expSeg56.children).find((b) => b.classList.contains('is-active')) : null;
+  ok(active56 && active56.textContent === '本学期', '打开导出报表时默认就是「本学期」：' + (active56 ? active56.textContent : '-'));
+  ok($('#sheetRoot').textContent.indexOf(Stats.range('semester').label) >= 0, '预览显示的就是本学期区间');
+  UI.closeSheet();
+  await wait(460);
+
   UI.go('home');
   await wait(250);
 
