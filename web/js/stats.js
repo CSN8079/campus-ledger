@@ -251,7 +251,7 @@
     }
 
     list.forEach((t) => {
-      const d = new Date(t.time);
+      const d = new Date(Store.statTime(t));
       const key = useMonth
         ? d.getFullYear() + '-' + ('0' + (d.getMonth() + 1)).slice(-2)
         : U.toISODate(d);

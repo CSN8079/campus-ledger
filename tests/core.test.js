@@ -743,6 +743,36 @@ function catName(tx) { return tx.categoryName || '(未分类)'; }
   eq(Hol.suggestions(hNow('2026-12-28 10:00')).length, 0, '总开关关掉后不提醒');
   await Store.updateSettings({ vacationExclude: true, holidayData: null, holidayPrompts: {} });
 
+  /* ---------- 24. 花呗还款算上月 + AI 对话历史 ---------- */
+  section('24. 花呗还款算上月 + AI 对话历史保留');
+  const c24 = (Store.categories.find((c) => c.name === '餐饮') || Store.categories[0]).id;
+  const early24 = await Store.addTx({
+    type: 'expense', amount: 120, time: U.fromISO('2026-03-01 09:00').getTime(),
+    categoryId: c24, categoryName: '餐饮', account: '支付宝', counterparty: '花呗', item: '花呗还款',
+    statsDate: '2026-02-28'
+  });
+  eq(Store.getTx(early24.id).statsDate, '2026-02-28', '账目记住「统计归属 2 月 28 日」');
+  const feb24 = Stats.range('custom', { from: '2026-02-01', to: '2026-02-28' });
+  const mar24 = Stats.range('custom', { from: '2026-03-01', to: '2026-03-31' });
+  eq(Store.query({ from: feb24.from, to: feb24.to }).filter((t) => t.id === early24.id).length, 1,
+    '这笔花呗还款算进了 2 月（上月）');
+  eq(Store.query({ from: mar24.from, to: mar24.to }).filter((t) => t.id === early24.id).length, 0,
+    '不算进 3 月（本月）');
+
+  const AIm = sandbox.AI;
+  AIm.log = [{ role: 'user', text: '这周花了多少' }, { role: 'ai', text: '一共 ¥12.00' }];
+  AIm.saveHistory();
+  AIm.log = [];
+  AIm.messages = [];
+  AIm.load();
+  eq(AIm.log.length, 2, '重新打开后历史对话还在');
+  eq(AIm.log[1].text, '一共 ¥12.00', '历史内容也对');
+  AIm.reset();
+  eq(AIm.log.length, 0, '点「清空对话」后历史被清掉');
+  AIm.load();
+  eq(AIm.log.length, 0, '清空后重新加载也是空的');
+  await Store.removeManyTx([early24.id]);
+
   /* ---------- 汇总 ---------- */
   console.log('\n' + '='.repeat(52));
   console.log('测试完成：通过 ' + pass + ' 项，失败 ' + fail + ' 项');
